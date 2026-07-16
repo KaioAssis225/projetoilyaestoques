@@ -44,7 +44,7 @@ Criar um sistema interno que apresente, em uma única fonte confiável, onde cad
 - **Em trânsito China → Porto:** quantidade embarcada com previsão de chegada ao Brasil.
 - **No porto / em trânsito Porto → GH:** quantidade confirmada no Brasil, aguardando chegada ao Estoque GH.
 - **Estoque GH físico:** quantidade efetivamente recebida na empresa.
-- **Estoque empenhado:** quantidade já reservada para demandas comerciais confirmadas. Não é um estoque adicional.
+- **Estoque empenhado:** parte do estoque físico GH já reservada para demandas comerciais confirmadas. Não é um estoque adicional.
 - **Estoque GH disponível:** `Estoque GH físico - Estoque GH empenhado`.
 
 Uma chegada aumenta o estoque físico GH. Ela não aumenta automaticamente o empenhado; o sistema apenas vincula o novo saldo às demandas que já estavam aguardando atendimento.
@@ -62,11 +62,9 @@ Uma chegada aumenta o estoque físico GH. Ela não aumenta automaticamente o emp
 Ao confirmar uma demanda, o sistema propõe o atendimento nesta ordem:
 
 1. Estoque GH disponível.
-2. Quantidades em trânsito, ordenadas pela previsão mais próxima.
-3. Estoque China disponível.
-4. Quantidade não atendida, gerando necessidade de compra para Comércio Exterior.
+2. Quantidade não atendida, gerando necessidade de compra para Comércio Exterior.
 
-O Comercial deve visualizar a composição antes de confirmar. A confirmação cria reservas por origem e evita que a mesma quantidade seja prometida duas vezes.
+Quantidades na China, em trânsito e no Porto podem ser exibidas como previsão de cobertura, mas não são reservadas. A confirmação cria empenho somente sobre o saldo disponível no Estoque GH.
 
 ## 5. Escopo do MVP por módulo
 
@@ -86,33 +84,33 @@ Ser a primeira tela do sistema e permitir comparar rapidamente, por item, onde e
 | Estoque China | Quantidade comprada e ainda mantida na China. |
 | Em trânsito | Quantidade embarcada da China e ainda não confirmada no porto brasileiro. |
 | Porto | Quantidade confirmada no porto e ainda não recebida fisicamente no Estoque GH. |
-| Estoque GH | Quantidade física total no Estoque GH, somando todas as localizações. |
-| Estoque empenhado | Total reservado para pedidos comerciais confirmados, considerando as reservas feitas em China, trânsito e GH. |
+| Estoque GH | Quantidade física total no Estoque GH, com indicação da parcela empenhada e do saldo disponível. |
 
 ### Comportamento da primeira versão
 
 - Exibir uma linha por código de item.
+- Atualizar imediatamente os valores de empenho e disponibilidade após criar ou cancelar um empenho, sem exigir filtros ou recarregamento.
 - Permitir busca por código, descrição ou acabamento.
 - Permitir ordenação pelas colunas da tabela.
 - Exibir somente valores inteiros e nunca deixar células de saldo vazias; ausência de saldo aparece como `0`.
 - Destacar visualmente o Estoque Empenhado, conforme o modelo fornecido.
 - Atualizar os saldos automaticamente a partir das movimentações, sem edição direta na tabela.
-- Ao selecionar uma linha, permitir acesso futuro ao detalhamento por localização e à origem dos empenhos; esse detalhamento não precisa aparecer na primeira tela do MVP.
+- Exibir no Estoque GH o saldo físico total, a quantidade empenhada e a quantidade disponível.
 
 ### Regras de cálculo
 
 - `Estoque GH` é o saldo físico total, antes da dedução dos empenhos.
-- `Estoque empenhado` não é somado ao estoque: representa parte das quantidades já comprometidas.
-- A quantidade disponível para novos pedidos é calculada internamente por origem como `saldo físico - saldo empenhado`.
-- O Porto aparece para rastreamento, mas não entra no empenho enquanto não houver decisão explícita alterando essa regra.
+- `Estoque empenhado` não é somado ao estoque: representa parte do Estoque GH já comprometida.
+- A quantidade disponível no Estoque GH é calculada como `saldo físico GH - saldo empenhado GH`.
+- Estoque China, trânsito e Porto não recebem empenhos.
 - Os pedidos comerciais são processados por ordem de confirmação.
 
 ### Critérios de aceite
 
-- Os oito cabeçalhos e sua ordem correspondem ao modelo Excel aprovado.
+- Os sete cabeçalhos e sua ordem correspondem ao modelo aprovado.
 - Cada item aparece uma única vez na visão consolidada.
 - A soma exibida por área corresponde aos movimentos válidos registrados para o item.
-- O empenho total corresponde à soma das reservas ativas em China, trânsito e GH.
+- O empenho corresponde às reservas ativas no Estoque GH.
 - A tela continua legível com muitos itens e não exige abrir os fluxos operacionais para consultar os saldos.
 
 ## Módulo 1 — Acesso e permissões
@@ -186,6 +184,23 @@ Acompanhar o pedido internacional desde sua criação até a entrega no Estoque 
 
 `Rascunho` → `Pedido confirmado` → `Parcialmente em trânsito` → `No porto` → `A caminho do GH` → `Aguardando alocação` → `Concluído`.
 
+### Fluxo inicial da área Comércio Exterior
+
+- A navegação possui uma área própria chamada `Comércio Exterior`.
+- Em `Novo pedido de compra`, o usuário seleciona o código e informa a quantidade total comprada.
+- A compra deve ser integralmente distribuída entre Estoque China e Em trânsito; uma das parcelas pode ser zero.
+- Quando houver quantidade enviada em trânsito, a previsão de chegada ao Porto é obrigatória.
+- Na data prevista ou após ela, a remessa permanece com alerta até o usuário informar `Chegou` ou `Não chegou`.
+- `Não chegou` exige uma nova data prevista.
+- Ao confirmar chegada ao Porto, toda a quantidade passa de Em trânsito para Porto e o usuário informa a previsão de chegada ao GH.
+- Ao confirmar chegada ao GH, toda a quantidade passa do Porto para o Estoque GH.
+- Confirmações de chegada nesta versão são sempre integrais; não há recebimento parcial.
+- Em `Retirar do estoque China`, o usuário seleciona código, quantidade e previsão de chegada ao Porto.
+- A retirada não pode superar o saldo disponível no Estoque China.
+- Pedidos, remessas, previsões e saldos físicos são persistidos no banco D1.
+- A lista `Pedidos de compra` exibe somente pedidos com remessas ainda em aberto.
+- Quando a remessa vinculada é confirmada integralmente no Estoque GH, o pedido é concluído e removido da lista de pedidos abertos.
+
 O status deve ser calculado pelas quantidades das linhas; um pedido pode ter itens em etapas diferentes.
 
 ### Critérios de aceite
@@ -199,6 +214,20 @@ O status deve ser calculado pelas quantidades das linhas; um pedido pode ter ite
 ## Módulo 4 — Recebimento e alocação no Estoque GH
 
 ### Objetivo
+
+### Fluxo inicial da área Alocação
+
+- A navegação possui uma área própria chamada `Alocação`.
+- O usuário seleciona um código e informa rua, coluna, nível e quantidade.
+- Todos os campos são obrigatórios.
+- Um mesmo código pode ser distribuído entre múltiplas posições.
+- A soma das quantidades alocadas de um código não pode ultrapassar seu saldo físico no Estoque GH.
+- A tela informa o saldo GH, o total já alocado e o restante disponível para alocação.
+- As posições ficam persistidas em tabela com produto, descrição, rua, coluna, nível e quantidade.
+- Quando código, rua, coluna e nível forem iguais a uma posição existente, a nova quantidade é somada à mesma linha.
+- A tabela permite ordenar alfabeticamente pelo código do produto em ordem crescente ou decrescente.
+- Ao confirmar a chegada de uma remessa no Estoque GH, o sistema cria automaticamente uma pendência de alocação com o código e a quantidade integral recebida.
+- A pendência permanece visível até que toda a quantidade recebida seja alocada em uma ou mais posições.
 
 Permitir que a Logística confira e distribua rapidamente os itens recebidos entre várias posições.
 
@@ -253,6 +282,20 @@ Dar baixa no Estoque GH com rastreabilidade por nota fiscal.
 - A nota fiscal, itens, quantidades, posições, usuário, data e hora permanecem consultáveis.
 - Cancelamento ou correção cria movimento inverso; não apaga o registro original.
 
+### Fluxo inicial da área Logística
+
+- A navegação possui uma área própria chamada `Logística`.
+- Em `Saída de produtos`, nota fiscal, número do pedido, código e quantidade são obrigatórios.
+- A saída diminui imediatamente o saldo físico do Estoque GH.
+- Antes de informar a quantidade, o usuário seleciona uma das posições alocadas do produto.
+- A saída reduz simultaneamente o saldo do Estoque GH e a quantidade da posição escolhida.
+- A quantidade não pode ultrapassar o saldo da posição; posições zeradas são removidas.
+- A quantidade da saída não pode superar o saldo disponível nem consumir unidades empenhadas.
+- Em `Ajuste de estoque`, o usuário seleciona o código e informa a nova quantidade física do Estoque GH.
+- Todo ajuste exige uma observação explicando o motivo.
+- Saídas e ajustes são persistidos em um histórico cronológico com produto, quantidades, nota, pedido, justificativa, data e hora.
+- O histórico de saída registra também rua, coluna e nível de origem.
+
 ## Módulo 6 — Demanda comercial e empenho
 
 ### Objetivo
@@ -265,33 +308,32 @@ Adicionar à aba de pedidos do sistema comercial existente um botão de análise
 
 ### Fluxo
 
-1. O Comercial abre um orçamento.
-2. O sistema identifica os códigos e quantidades solicitados.
-3. Exibe, por item:
-   - estoque GH físico;
-   - estoque GH já empenhado;
-   - estoque GH disponível;
-   - quantidades e previsões em trânsito;
-   - estoque China disponível;
-   - falta projetada.
-4. O sistema propõe a composição de atendimento conforme a prioridade definida.
-5. O Comercial revisa e confirma.
-6. A confirmação cria o empenho e atualiza os saldos disponíveis por origem.
-7. Faltas geram alerta de necessidade de compra para Comércio Exterior.
+1. O usuário acessa a área Comercial e seleciona `Novo empenho`.
+2. Escolhe o código do item.
+3. O sistema exibe o estoque GH físico, o estoque já empenhado e o saldo disponível.
+4. O usuário informa uma quantidade inteira positiva e uma observação com o motivo ou destinatário.
+5. Se a quantidade solicitada superar o saldo disponível no Estoque GH, o sistema bloqueia a confirmação e informa o saldo disponível.
+6. A confirmação cria o empenho no Estoque GH e atualiza seu saldo disponível.
+7. Cada empenho ativo pode ser cancelado mediante confirmação do usuário.
+8. O cancelamento remove o empenho ativo e devolve imediatamente a quantidade ao saldo disponível do Estoque GH.
 
 ### Exemplo
 
-Demanda de 50 unidades, com 20 disponíveis no GH, nenhuma em trânsito e 80 disponíveis na China:
+Demanda de 50 unidades, com 20 disponíveis no GH, nenhuma em trânsito e 80 unidades na China:
 
 - 20 reservadas no GH.
-- 30 reservadas/projetadas no Estoque China.
-- 0 unidades sem cobertura.
-- Saldo China disponível após a reserva: 50.
+- 30 unidades não empenhadas, com cobertura futura projetada pelo saldo da China.
+- O saldo China permanece 80, pois não recebe reservas.
+- A necessidade pendente da demanda permanece identificada até a mercadoria entrar no Estoque GH.
 
 ### Critérios de aceite
 
 - A mesma unidade não pode atender duas demandas.
-- Alterar ou cancelar uma demanda libera as reservas correspondentes.
+- Somente usuários da área Comercial autorizados podem criar empenhos.
+- Código do item, quantidade e observação são obrigatórios.
+- A quantidade empenhada deve ser inteira, positiva e menor ou igual ao saldo disponível no Estoque GH.
+- Alterar ou cancelar uma demanda libera o empenho correspondente no Estoque GH.
+- A criação e o cancelamento de empenhos atualizam imediatamente a visão de Estoque.
 - O Comercial vê a data prevista quando o atendimento depende de trânsito ou China.
 - Uma falta gera alerta com item, quantidade faltante e demanda de origem.
 - A confirmação final exige autorização do usuário; a análise, sozinha, não altera estoque.
@@ -388,7 +430,7 @@ Cada módulo funcional deve possuir regras, telas, API, persistência e testes p
 
 - O sistema comercial foi desenvolvido internamente e terá integração futura por webhook.
 - O Estoque China contém somente mercadoria já comprada e pertencente à empresa.
-- Demandas podem reservar quantidades no Estoque China, em trânsito e no Estoque GH.
+- Demandas podem reservar quantidades somente no Estoque GH.
 - Demandas concorrentes são atendidas por ordem de confirmação.
 - Uma localização pode conter códigos diferentes.
 - O MVP aceita somente recebimentos com a quantidade prevista.
@@ -399,7 +441,8 @@ Cada módulo funcional deve possuir regras, telas, API, persistência e testes p
 ### Visão inicial confirmada
 
 - A primeira entrega começa por uma tabela consolidada de estoque baseada no arquivo `modelo de estoque.xlsx`.
-- A tabela apresenta código, descrição, acabamento, China, trânsito, porto, GH e empenho.
+- A tabela apresenta código, descrição, acabamento, China, trânsito, Porto e Estoque GH.
+- O Estoque GH apresenta, na mesma célula, o saldo físico, a quantidade empenhada e a quantidade disponível.
 - Os exemplos de pedidos comerciais presentes na planilha servem como massa de cenário para validar o cálculo automático do empenho, e não como parte da tabela principal.
 
 ## 10. Definição de pronto do MVP

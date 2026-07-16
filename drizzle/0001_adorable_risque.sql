@@ -1,0 +1,1 @@
+ALTER TABLE `shipments` ADD `purchase_order_id` integer;

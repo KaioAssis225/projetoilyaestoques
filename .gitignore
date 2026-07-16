@@ -40,3 +40,9 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+.codex-dev.pid
+.codex-dev.stdout.log
+.codex-dev.stderr.log
+.pnpm-store/
+pnpm-lock.yaml
+pnpm-workspace.yaml
