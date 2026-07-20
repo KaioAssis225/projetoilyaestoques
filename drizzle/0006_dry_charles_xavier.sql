@@ -1,0 +1,1 @@
+ALTER TABLE `inventory` ADD `returns` integer DEFAULT 0 NOT NULL;

@@ -8,6 +8,7 @@ type InventoryRow = {
   transit: number;
   port: number;
   gh: number;
+  returns: number;
 };
 
 async function ensureDatabase() {
@@ -21,6 +22,7 @@ async function ensureDatabase() {
       transit INTEGER NOT NULL DEFAULT 0,
       port INTEGER NOT NULL DEFAULT 0,
       gh INTEGER NOT NULL DEFAULT 0,
+      returns INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
     db.prepare(`CREATE TABLE IF NOT EXISTS purchase_orders (
@@ -56,6 +58,11 @@ async function ensureDatabase() {
   const shipmentColumns = await db.prepare("PRAGMA table_info(shipments)").all<{ name: string }>();
   if (!shipmentColumns.results.some((column) => column.name === "purchase_order_id")) {
     await db.prepare("ALTER TABLE shipments ADD COLUMN purchase_order_id INTEGER").run();
+  }
+
+  const inventoryColumns = await db.prepare("PRAGMA table_info(inventory)").all<{ name: string }>();
+  if (!inventoryColumns.results.some((column) => column.name === "returns")) {
+    await db.prepare("ALTER TABLE inventory ADD COLUMN returns INTEGER NOT NULL DEFAULT 0").run();
   }
 
   await db.batch([
@@ -194,9 +201,20 @@ export async function POST(request: Request) {
     }
   } else if (action === "reset_test_data") {
     await env.DB.batch([
+      env.DB.prepare("DELETE FROM return_allocations"),
+      env.DB.prepare("DELETE FROM logistics_order_sources"),
+      env.DB.prepare("DELETE FROM logistics_order_items"),
+      env.DB.prepare("DELETE FROM logistics_orders"),
+      env.DB.prepare("DELETE FROM commitment_document_items"),
+      env.DB.prepare("DELETE FROM commitment_documents"),
+      env.DB.prepare("DELETE FROM commitments"),
+      env.DB.prepare("DELETE FROM logistics_events"),
+      env.DB.prepare("DELETE FROM allocations"),
+      env.DB.prepare("DELETE FROM allocation_tasks"),
       env.DB.prepare("DELETE FROM shipments"),
       env.DB.prepare("DELETE FROM purchase_orders"),
-      env.DB.prepare("UPDATE inventory SET china = 0, transit = 0, port = 0, gh = 0, updated_at = CURRENT_TIMESTAMP"),
+      env.DB.prepare("UPDATE inventory SET china = 0, transit = 0, port = 0, gh = 0, returns = 0, updated_at = CURRENT_TIMESTAMP"),
+      env.DB.prepare("DELETE FROM sqlite_sequence WHERE name IN ('return_allocations', 'logistics_order_sources', 'logistics_order_items', 'logistics_orders', 'commitment_documents', 'commitment_document_items', 'commitments', 'logistics_events', 'allocations', 'allocation_tasks', 'shipments', 'purchase_orders')"),
     ]);
   } else {
     return Response.json({ error: "Ação inválida." }, { status: 400 });

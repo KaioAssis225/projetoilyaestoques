@@ -85,6 +85,7 @@ Ser a primeira tela do sistema e permitir comparar rapidamente, por item, onde e
 | Em trânsito | Quantidade embarcada da China e ainda não confirmada no porto brasileiro. |
 | Porto | Quantidade confirmada no porto e ainda não recebida fisicamente no Estoque GH. |
 | Estoque GH | Quantidade física total no Estoque GH, com indicação da parcela empenhada e do saldo disponível. |
+| Estoque Devolução | Quantidade devolvida e mantida separada do saldo físico disponível do Estoque GH. |
 
 ### Comportamento da primeira versão
 
@@ -309,6 +310,8 @@ Adicionar à aba de pedidos do sistema comercial existente um botão de análise
 ### Fluxo
 
 1. O usuário acessa a área Comercial e seleciona `Novo empenho`.
+2. Escolhe entre `Reserva de itens` e `Empenho de pedido`.
+3. O empenho de pedido exige número do pedido; o mesmo número pode ser usado em produtos diferentes.
 2. Escolhe o código do item.
 3. O sistema exibe o estoque GH físico, o estoque já empenhado e o saldo disponível.
 4. O usuário informa uma quantidade inteira positiva e uma observação com o motivo ou destinatário.
@@ -331,6 +334,9 @@ Demanda de 50 unidades, com 20 disponíveis no GH, nenhuma em trânsito e 80 uni
 - A mesma unidade não pode atender duas demandas.
 - Somente usuários da área Comercial autorizados podem criar empenhos.
 - Código do item, quantidade e observação são obrigatórios.
+- Reservas e empenhos de pedido são persistidos no banco e identificados pelo tipo na listagem.
+- No empenho de pedido, a observação é opcional.
+- O empenho de pedido possui a marcação `Itens de empréstimo`, persistida para a futura devolução ao Estoque Devolução.
 - A quantidade empenhada deve ser inteira, positiva e menor ou igual ao saldo disponível no Estoque GH.
 - Alterar ou cancelar uma demanda libera o empenho correspondente no Estoque GH.
 - A criação e o cancelamento de empenhos atualizam imediatamente a visão de Estoque.

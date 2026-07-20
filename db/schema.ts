@@ -9,6 +9,7 @@ export const inventory = sqliteTable("inventory", {
   transit: integer("transit").notNull().default(0),
   port: integer("port").notNull().default(0),
   gh: integer("gh").notNull().default(0),
+  returns: integer("returns").notNull().default(0),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
@@ -66,5 +67,74 @@ export const allocationTasks = sqliteTable("allocation_tasks", {
   quantity: integer("quantity").notNull(),
   allocatedQuantity: integer("allocated_quantity").notNull().default(0),
   status: text("status").notNull().default("pending"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const commitments = sqliteTable("commitments", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  type: text("type").notNull(),
+  code: text("code").notNull(),
+  quantity: integer("quantity").notNull(),
+  note: text("note").notNull(),
+  orderNumber: text("order_number"),
+  loanItems: integer("loan_items", { mode: "boolean" }).notNull().default(false),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const commitmentDocuments = sqliteTable("commitment_documents", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  type: text("type").notNull(),
+  reservationCode: text("reservation_code").unique(),
+  orderNumber: text("order_number"),
+  note: text("note").notNull().default(""),
+  loanItems: integer("loan_items", { mode: "boolean" }).notNull().default(false),
+  legacyCommitmentId: integer("legacy_commitment_id").unique(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const commitmentDocumentItems = sqliteTable("commitment_document_items", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  documentId: integer("document_id").notNull(),
+  code: text("code").notNull(),
+  quantity: integer("quantity").notNull(),
+});
+
+export const logisticsOrders = sqliteTable("logistics_orders", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  commitmentDocumentId: integer("commitment_document_id").notNull().unique(),
+  orderNumber: text("order_number").notNull(),
+  loanItems: integer("loan_items", { mode: "boolean" }).notNull().default(false),
+  status: text("status").notNull().default("awaiting_invoice"),
+  invoiceNumber: text("invoice_number"),
+  separatedAt: text("separated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  departedAt: text("departed_at"),
+  returnedAt: text("returned_at"),
+});
+
+export const logisticsOrderItems = sqliteTable("logistics_order_items", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  logisticsOrderId: integer("logistics_order_id").notNull(),
+  code: text("code").notNull(),
+  quantity: integer("quantity").notNull(),
+});
+
+export const logisticsOrderSources = sqliteTable("logistics_order_sources", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  logisticsOrderItemId: integer("logistics_order_item_id").notNull(),
+  allocationId: integer("allocation_id").notNull(),
+  street: text("street").notNull(),
+  column: text("column").notNull(),
+  level: text("level").notNull(),
+  quantity: integer("quantity").notNull(),
+});
+
+export const returnAllocations = sqliteTable("return_allocations", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  logisticsOrderItemId: integer("logistics_order_item_id").notNull(),
+  code: text("code").notNull(),
+  street: text("street").notNull(),
+  column: text("column").notNull(),
+  level: text("level").notNull(),
+  quantity: integer("quantity").notNull(),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });

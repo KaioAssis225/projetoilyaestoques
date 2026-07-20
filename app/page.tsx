@@ -10,6 +10,7 @@ type StockItem = {
   transit: number;
   port: number;
   gh: number;
+  returns: number;
   ghCommitted: number;
 };
 
@@ -51,6 +52,19 @@ type LogisticsEvent = {
   created_at: string;
 };
 
+type LogisticsOrder = {
+  id: number;
+  order_number: string;
+  loan_items: number;
+  status?: "awaiting_invoice" | "awaiting_return" | "completed" | "returned";
+  invoice_number?: string | null;
+  created_at?: string;
+  separated_at?: string;
+  departed_at?: string | null;
+  returned_at?: string | null;
+  items: Array<{ id: number; code: string; quantity: number; description: string; finish: string; sources?: Array<{ id: number; street: string; column: string; level: string; quantity: number }> }>;
+};
+
 type Allocation = {
   id: number;
   code: string;
@@ -74,13 +88,37 @@ type AllocationTask = {
   status: string;
 };
 
+type ReturnAllocation = {
+  id: number;
+  code: string;
+  description: string;
+  finish: string;
+  order_number: string;
+  street: string;
+  column: string;
+  level: string;
+  quantity: number;
+  created_at: string;
+};
+
+type CommitmentDocument = {
+  id: number;
+  type: "reservation" | "order";
+  reservation_code: string | null;
+  note: string;
+  order_number: string | null;
+  loan_items: number;
+  created_at: string;
+  items: Array<{ id: number; code: string; quantity: number; description: string; finish: string }>;
+};
+
 const initialItems: StockItem[] = [
-  { code: "CD0100", description: "Cadeira", finish: "Taupe", china: 0, transit: 0, port: 0, gh: 0, ghCommitted: 0 },
-  { code: "SF0100", description: "Sofá", finish: "Areia", china: 0, transit: 0, port: 0, gh: 0, ghCommitted: 0 },
-  { code: "MJ0100", description: "Mesa", finish: "Rose", china: 0, transit: 0, port: 0, gh: 0, ghCommitted: 0 },
+  { code: "CD0100", description: "Cadeira", finish: "Taupe", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
+  { code: "SF0100", description: "Sofá", finish: "Areia", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
+  { code: "MJ0100", description: "Mesa", finish: "Rose", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
 ];
 
-type SortKey = keyof Pick<StockItem, "code" | "description" | "finish" | "china" | "transit" | "port" | "gh">;
+type SortKey = keyof Pick<StockItem, "code" | "description" | "finish" | "china" | "transit" | "port" | "gh" | "returns">;
 
 const columns: { key: SortKey; label: string; numeric?: boolean }[] = [
   { key: "code", label: "Código do item" },
@@ -90,6 +128,7 @@ const columns: { key: SortKey; label: string; numeric?: boolean }[] = [
   { key: "transit", label: "Em trânsito", numeric: true },
   { key: "port", label: "Porto", numeric: true },
   { key: "gh", label: "Estoque GH", numeric: true },
+  { key: "returns", label: "Estoque Devolução", numeric: true },
 ];
 
 function GhBalance({ total, committed }: { total: number; committed: number }) {
@@ -107,10 +146,14 @@ export default function Home() {
   const [items, setItems] = useState(initialItems);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; direction: "asc" | "desc" }>({ key: "code", direction: "asc" });
-  const [commitments, setCommitments] = useState<{ id: number; code: string; quantity: number; note: string }[]>([]);
+  const [commitments, setCommitments] = useState<CommitmentDocument[]>([]);
+  const [commitmentChoiceOpen, setCommitmentChoiceOpen] = useState(false);
+  const [commitmentType, setCommitmentType] = useState<"reservation" | "order">("reservation");
+  const [commitmentOrderNumber, setCommitmentOrderNumber] = useState("");
+  const [loanItems, setLoanItems] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
-  const [selectedCode, setSelectedCode] = useState(initialItems[0].code);
-  const [quantity, setQuantity] = useState("");
+  const [commitmentLines, setCommitmentLines] = useState([{ code: initialItems[0].code, quantity: "" }]);
+  const [commitmentToCancel, setCommitmentToCancel] = useState<CommitmentDocument | null>(null);
   const [note, setNote] = useState("");
   const [formError, setFormError] = useState("");
   const [foreignData, setForeignData] = useState<ForeignTradeData>({ inventory: [], shipments: [], orders: [] });
@@ -126,12 +169,17 @@ export default function Home() {
   const [arrivalAction, setArrivalAction] = useState<{ shipment: Shipment; type: "arrived" | "delayed" } | null>(null);
   const [arrivalDate, setArrivalDate] = useState("");
   const [logisticsEvents, setLogisticsEvents] = useState<LogisticsEvent[]>([]);
+  const [openLogisticsOrders, setOpenLogisticsOrders] = useState<LogisticsOrder[]>([]);
+  const [logisticsOrders, setLogisticsOrders] = useState<LogisticsOrder[]>([]);
+  const [returnAllocations, setReturnAllocations] = useState<ReturnAllocation[]>([]);
   const [logisticsForm, setLogisticsForm] = useState<"exit" | "adjustment" | null>(null);
+  const [selectedLogisticsOrder, setSelectedLogisticsOrder] = useState<LogisticsOrder | null>(null);
+  const [orderSelections, setOrderSelections] = useState<Record<number, Array<{ allocationId: string; quantity: string }>>>({});
+  const [invoiceOrder, setInvoiceOrder] = useState<LogisticsOrder | null>(null);
+  const [returnOrder, setReturnOrder] = useState<LogisticsOrder | null>(null);
+  const [returnPositions, setReturnPositions] = useState<Record<number, { street: string; column: string; level: string }>>({});
   const [logisticsCode, setLogisticsCode] = useState(initialItems[0].code);
   const [invoiceNumber, setInvoiceNumber] = useState("");
-  const [orderNumber, setOrderNumber] = useState("");
-  const [logisticsQuantity, setLogisticsQuantity] = useState("");
-  const [logisticsAllocationId, setLogisticsAllocationId] = useState("");
   const [adjustedQuantity, setAdjustedQuantity] = useState("");
   const [adjustmentNote, setAdjustmentNote] = useState("");
   const [logisticsError, setLogisticsError] = useState("");
@@ -146,13 +194,10 @@ export default function Home() {
   const [allocationQuantity, setAllocationQuantity] = useState("");
   const [allocationError, setAllocationError] = useState("");
   const [allocationSort, setAllocationSort] = useState<"asc" | "desc">("asc");
+  const [allocationView, setAllocationView] = useState<"gh" | "returns">("gh");
 
-  const selectedItem = items.find((item) => item.code === selectedCode) ?? items[0];
-  const selectedAvailable = Math.max(selectedItem.gh - selectedItem.ghCommitted, 0);
   const foreignItem = items.find((item) => item.code === foreignCode) ?? items[0];
   const logisticsItem = items.find((item) => item.code === logisticsCode) ?? items[0];
-  const logisticsPositions = allocations.filter((allocation) => allocation.code === logisticsCode);
-  const logisticsPosition = logisticsPositions.find((allocation) => allocation.id === Number(logisticsAllocationId));
   const allocationItem = items.find((item) => item.code === allocationCode) ?? items[0];
   const allocatedForItem = allocations
     .filter((allocation) => allocation.code === allocationCode)
@@ -196,15 +241,39 @@ export default function Home() {
     setAllocationTasks(data.tasks ?? []);
   }
 
+  function applyLogisticsData(data: { inventory?: Array<Omit<StockItem, "ghCommitted">>; events?: LogisticsEvent[]; openOrders?: LogisticsOrder[]; logisticsOrders?: LogisticsOrder[]; returnAllocations?: ReturnAllocation[] }) {
+    setLogisticsEvents(data.events ?? []);
+    setOpenLogisticsOrders(data.openOrders ?? []);
+    setLogisticsOrders(data.logisticsOrders ?? []);
+    setReturnAllocations(data.returnAllocations ?? []);
+    if (data.inventory) setItems((current) => data.inventory!.map((item) => ({
+      ...item,
+      ghCommitted: current.find((candidate) => candidate.code === item.code)?.ghCommitted ?? 0,
+    })));
+  }
+
+  async function refreshLogistics() {
+    const response = await fetch("/api/logistics");
+    applyLogisticsData(await response.json());
+  }
+
   useEffect(() => {
     // Initial API hydration intentionally updates the client-side workspace state.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshForeignTrade();
-    void fetch("/api/logistics").then(async (response) => {
-      const data = await response.json() as { events?: LogisticsEvent[] };
-      setLogisticsEvents(data.events ?? []);
-    });
+    void refreshLogistics();
     void refreshAllocations();
+    void fetch("/api/commitments").then(async (response) => {
+      const data = await response.json() as { documents?: CommitmentDocument[] };
+      const saved = data.documents ?? [];
+      setCommitments(saved);
+      setItems((current) => current.map((item) => ({
+        ...item,
+        ghCommitted: saved.flatMap((document) => document.items).filter((entry) => entry.code === item.code).reduce((total, entry) => total + entry.quantity, 0),
+      })));
+    });
+    // Initial hydration is intentionally executed once for this single-page workspace.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const visibleItems = useMemo(() => {
@@ -226,51 +295,66 @@ export default function Home() {
   }
 
   function openCommitmentForm() {
-    setSelectedCode(items.find((item) => item.gh - item.ghCommitted > 0)?.code ?? items[0].code);
-    setQuantity("");
+    setCommitmentLines([{ code: items.find((item) => item.gh - item.ghCommitted > 0)?.code ?? items[0].code, quantity: "" }]);
     setNote("");
+    setCommitmentOrderNumber("");
+    setLoanItems(false);
     setFormError("");
     setFormOpen(true);
   }
 
-  function submitCommitment(event: FormEvent<HTMLFormElement>) {
+  async function submitCommitment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const requested = Number(quantity);
-    if (!Number.isInteger(requested) || requested <= 0) {
-      setFormError("Informe uma quantidade inteira maior que zero.");
+    if (commitmentLines.some((line) => !Number.isInteger(Number(line.quantity)) || Number(line.quantity) <= 0)) {
+      setFormError("Todos os itens precisam de uma quantidade inteira maior que zero.");
       return;
     }
-    if (requested > selectedAvailable) {
-      setFormError(`Quantidade maior que o disponível. Há ${selectedAvailable} unidades disponíveis no Estoque GH.`);
-      return;
-    }
-    if (!note.trim()) {
+    if (commitmentType === "reservation" && !note.trim()) {
       setFormError("Informe o motivo ou para quem este item será empenhado.");
       return;
     }
-
-    setItems((current) => current.map((item) => (
-      item.code === selectedCode ? { ...item, ghCommitted: item.ghCommitted + requested } : item
-    )));
-    setCommitments((current) => [
-      { id: Date.now(), code: selectedCode, quantity: requested, note: note.trim() },
-      ...current,
-    ]);
-    setFormOpen(false);
-  }
-
-  function cancelCommitment(id: number) {
-    const commitment = commitments.find((item) => item.id === id);
-    if (!commitment || !window.confirm(`Cancelar o empenho de ${commitment.quantity} unidades do item ${commitment.code}?`)) {
+    if (commitmentType === "order" && !commitmentOrderNumber.trim()) {
+      setFormError("Informe o número do pedido.");
       return;
     }
+    try {
+      const response = await fetch("/api/commitments", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: commitmentType, items: commitmentLines, note, orderNumber: commitmentOrderNumber, loanItems }),
+      });
+      const data = await response.json() as { documents?: CommitmentDocument[]; error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Não foi possível criar o empenho.");
+      const saved = data.documents ?? [];
+      setCommitments(saved);
+      setItems((current) => current.map((item) => ({
+        ...item,
+        ghCommitted: saved.flatMap((document) => document.items).filter((entry) => entry.code === item.code).reduce((total, entry) => total + entry.quantity, 0),
+      })));
+      setFormOpen(false);
+      await refreshLogistics();
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : "Não foi possível criar o empenho.");
+    }
+  }
 
-    setItems((current) => current.map((item) => (
-      item.code === commitment.code
-        ? { ...item, ghCommitted: Math.max(item.ghCommitted - commitment.quantity, 0) }
-        : item
-    )));
-    setCommitments((current) => current.filter((item) => item.id !== id));
+  async function confirmCommitmentCancellation() {
+    if (!commitmentToCancel) return;
+    try {
+      const response = await fetch(`/api/commitments?id=${commitmentToCancel.id}`, { method: "DELETE" });
+      const data = await response.json() as { documents?: CommitmentDocument[]; error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Não foi possível cancelar o documento.");
+      const saved = data.documents ?? [];
+      setCommitments(saved);
+      setItems((current) => current.map((item) => ({
+        ...item,
+        ghCommitted: saved.flatMap((document) => document.items).filter((entry) => entry.code === item.code).reduce((total, entry) => total + entry.quantity, 0),
+      })));
+      setCommitmentToCancel(null);
+      setFormError("");
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : "Não foi possível cancelar o documento.");
+    }
   }
 
   async function sendForeignAction(payload: Record<string, unknown>) {
@@ -335,12 +419,7 @@ export default function Home() {
 
   async function submitLogistics(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const requested = Number(logisticsQuantity);
-    if (logisticsForm === "exit" && requested > logisticsItem.gh - logisticsItem.ghCommitted) {
-      setLogisticsError(`A saída não pode consumir unidades empenhadas. Há ${Math.max(logisticsItem.gh - logisticsItem.ghCommitted, 0)} unidades disponíveis.`);
-      return;
-    }
-    if (logisticsForm === "adjustment" && Number(adjustedQuantity) < logisticsItem.ghCommitted) {
+    if (Number(adjustedQuantity) < logisticsItem.ghCommitted) {
       setLogisticsError(`O ajuste não pode deixar o estoque abaixo das ${logisticsItem.ghCommitted} unidades empenhadas.`);
       return;
     }
@@ -348,14 +427,7 @@ export default function Home() {
       const response = await fetch("/api/logistics", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(logisticsForm === "exit" ? {
-          action: "exit",
-          code: logisticsCode,
-          invoiceNumber,
-          orderNumber,
-          quantity: logisticsQuantity,
-          allocationId: logisticsAllocationId,
-        } : {
+        body: JSON.stringify({
           action: "adjustment",
           code: logisticsCode,
           newQuantity: adjustedQuantity,
@@ -379,6 +451,46 @@ export default function Home() {
     } catch (error) {
       setLogisticsError(error instanceof Error ? error.message : "Não foi possível concluir a movimentação.");
     }
+  }
+
+  async function sendLogisticsAction(payload: Record<string, unknown>) {
+    const response = await fetch("/api/logistics", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+    const data = await response.json() as { inventory?: Array<Omit<StockItem, "ghCommitted">>; events?: LogisticsEvent[]; openOrders?: LogisticsOrder[]; logisticsOrders?: LogisticsOrder[]; returnAllocations?: ReturnAllocation[]; error?: string };
+    if (!response.ok) throw new Error(data.error ?? "Não foi possível concluir a operação.");
+    applyLogisticsData(data);
+    await refreshAllocations();
+    const commercialResponse = await fetch("/api/commitments");
+    const commercialData = await commercialResponse.json() as { documents?: CommitmentDocument[] };
+    const documents = commercialData.documents ?? [];
+    setCommitments(documents);
+    setItems((current) => current.map((item) => ({ ...item, ghCommitted: documents.flatMap((document) => document.items).filter((entry) => entry.code === item.code).reduce((total, entry) => total + entry.quantity, 0) })));
+  }
+
+  async function separateOrder(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedLogisticsOrder) return;
+    try {
+      const selections = Object.entries(orderSelections).flatMap(([itemId, rows]) => rows.map((row) => ({ itemId: Number(itemId), allocationId: row.allocationId, quantity: row.quantity })));
+      await sendLogisticsAction({ action: "separate_order", documentId: selectedLogisticsOrder.id, selections });
+      setSelectedLogisticsOrder(null); setLogisticsForm(null); setLogisticsError("");
+    } catch (error) { setLogisticsError(error instanceof Error ? error.message : "Não foi possível separar o pedido."); }
+  }
+
+  async function submitInvoice(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!invoiceOrder) return;
+    try { await sendLogisticsAction({ action: "invoice", orderId: invoiceOrder.id, invoiceNumber }); setInvoiceOrder(null); setInvoiceNumber(""); setLogisticsError(""); }
+    catch (error) { setLogisticsError(error instanceof Error ? error.message : "Não foi possível registrar a nota fiscal."); }
+  }
+
+  async function submitReturn(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!returnOrder) return;
+    try {
+      const positions = returnOrder.items.map((item) => ({ itemId: item.id, ...(returnPositions[item.id] ?? {}) }));
+      await sendLogisticsAction({ action: "return_order", orderId: returnOrder.id, positions });
+      setReturnOrder(null); setReturnPositions({}); setLogisticsError("");
+    } catch (error) { setLogisticsError(error instanceof Error ? error.message : "Não foi possível registrar a devolução."); }
   }
 
   async function submitAllocation(event: FormEvent<HTMLFormElement>) {
@@ -498,6 +610,7 @@ export default function Home() {
                     <td className="numeric">{item.transit}</td>
                     <td className="numeric">{item.port}</td>
                     <td className="numeric"><GhBalance total={item.gh} committed={item.ghCommitted} /></td>
+                    <td className="numeric">{item.returns}</td>
                   </tr>
                 ))}
               </tbody>
@@ -521,7 +634,7 @@ export default function Home() {
                 <h1>Empenhos</h1>
                 <p className="subtitle">Reserve itens disponíveis no Estoque GH para demandas confirmadas.</p>
               </div>
-              <button className="primary-button" type="button" onClick={openCommitmentForm}>+ Novo empenho</button>
+              <button className="primary-button" type="button" onClick={() => setCommitmentChoiceOpen(true)}>+ Novo empenho</button>
             </div>
 
             <section className="commitment-panel" aria-labelledby="commitments-title">
@@ -534,19 +647,24 @@ export default function Home() {
               {commitments.length > 0 ? (
                 <div className="commitment-list">
                   {commitments.map((commitment) => {
-                    const item = items.find((candidate) => candidate.code === commitment.code);
+                    const total = commitment.items.reduce((sum, item) => sum + item.quantity, 0);
                     return (
-                      <article className="commitment-row" key={commitment.id}>
-                        <div>
-                          <strong>{commitment.code}</strong>
-                          <span>{item?.description} · {item?.finish}</span>
+                      <article className="commitment-document" key={commitment.id}>
+                        <div className="commitment-document-heading">
+                          <div>
+                            <strong>{commitment.type === "reservation" ? commitment.reservation_code : `Pedido nº ${commitment.order_number}`}</strong>
+                            <span>{commitment.type === "reservation" ? "Reserva de itens" : `Empenho de pedido${commitment.loan_items ? " · Itens de empréstimo" : ""}`}</span>
+                          </div>
+                          <div className="commitment-actions">
+                            <span className="source-committed">{total} empenhado</span>
+                            <button className="cancel-button" type="button" onClick={() => setCommitmentToCancel(commitment)}>Cancelar documento</button>
+                          </div>
                         </div>
-                        <p>{commitment.note}</p>
-                        <div className="commitment-actions">
-                          <span className="source-committed">{commitment.quantity} empenhado</span>
-                          <button className="cancel-button" type="button" onClick={() => cancelCommitment(commitment.id)}>
-                            Cancelar empenho
-                          </button>
+                        {commitment.note && <p className="commitment-note">{commitment.note}</p>}
+                        <div className="commitment-items">
+                          {commitment.items.map((line) => (
+                            <div key={line.id}><span>{line.code} · {line.description} · {line.finish}</span><strong>{line.quantity}</strong></div>
+                          ))}
                         </div>
                       </article>
                     );
@@ -556,7 +674,7 @@ export default function Home() {
                 <div className="empty-state commercial-empty">
                   <strong>Nenhum empenho criado</strong>
                   <p>Use “Novo empenho” para reservar uma quantidade disponível no Estoque GH.</p>
-                  <button type="button" onClick={openCommitmentForm}>Criar primeiro empenho</button>
+                  <button type="button" onClick={() => setCommitmentChoiceOpen(true)}>Criar primeiro empenho</button>
                 </div>
               )}
             </section>
@@ -655,7 +773,7 @@ export default function Home() {
                   setLogisticsForm("adjustment"); setLogisticsError(""); setAdjustedQuantity(""); setAdjustmentNote("");
                 }}>Ajuste de estoque</button>
                 <button className="primary-button" type="button" onClick={() => {
-                  setLogisticsForm("exit"); setLogisticsError(""); setInvoiceNumber(""); setOrderNumber(""); setLogisticsQuantity(""); setLogisticsAllocationId("");
+                  setLogisticsForm("exit"); setSelectedLogisticsOrder(null); setOrderSelections({}); setLogisticsError("");
                 }}>+ Saída de produtos</button>
               </div>
             </div>
@@ -664,10 +782,25 @@ export default function Home() {
 
             <section className="commitment-panel">
               <div className="panel-heading">
-                <div><h2>Histórico da Logística</h2><p>Saídas por nota fiscal e ajustes realizados no Estoque GH.</p></div>
+                <div><h2>Histórico da Logística</h2><p>Pedidos separados, baixas por nota fiscal, devoluções e ajustes do Estoque GH.</p></div>
               </div>
-              {logisticsEvents.length ? (
+              {logisticsOrders.length || logisticsEvents.length ? (
                 <div className="logistics-list">
+                  {logisticsOrders.map((order) => (
+                    <article className="logistics-order-row" key={`order-${order.id}`}>
+                      <div><strong>Pedido {order.order_number}</strong><span>{order.loan_items ? "Itens de empréstimo" : "Pedido de venda"}</span></div>
+                      <div><span>{order.items.length} {order.items.length === 1 ? "produto" : "produtos"}</span><strong>{order.items.reduce((sum, item) => sum + item.quantity, 0)} unidades</strong></div>
+                      <div className="order-history-items">
+                        {order.items.map((item) => <span key={item.id}><strong>{item.code}</strong> · {item.quantity} un. · {(item.sources ?? []).map((source) => `Rua ${source.street} / Col. ${source.column} / Nív. ${source.level}: ${source.quantity}`).join("; ")}</span>)}
+                      </div>
+                      <div><span>Status</span><strong>{order.status === "awaiting_invoice" ? "Separado · aguardando NF" : order.status === "awaiting_return" ? "Aguardando devolução" : order.status === "returned" ? "Devolvido" : "Saída concluída"}</strong>{order.invoice_number && <span>NF {order.invoice_number}</span>}</div>
+                      <div className="history-action">
+                        {order.status === "awaiting_invoice" && <button className="primary-button compact" type="button" onClick={() => { setInvoiceOrder(order); setInvoiceNumber(""); setLogisticsError(""); }}>Baixa por NF</button>}
+                        {order.status === "awaiting_return" && <button className="primary-button compact" type="button" onClick={() => { setReturnOrder(order); setReturnPositions({}); setLogisticsError(""); }}>Registrar devolução</button>}
+                        {order.status !== "awaiting_invoice" && order.status !== "awaiting_return" && <time>{new Date(`${(order.returned_at ?? order.departed_at ?? order.separated_at)?.replace(" ", "T")}Z`).toLocaleString("pt-BR")}</time>}
+                      </div>
+                    </article>
+                  ))}
                   {logisticsEvents.map((entry) => {
                     const item = items.find((candidate) => candidate.code === entry.code);
                     return (
@@ -702,9 +835,9 @@ export default function Home() {
                 <h1>Alocação</h1>
                 <p className="subtitle">Distribua o Estoque GH por rua, coluna e nível.</p>
               </div>
-              <button className="primary-button" type="button" onClick={() => {
+              {allocationView === "gh" && <button className="primary-button" type="button" onClick={() => {
                 setAllocationFormOpen(true); setSelectedAllocationTask(null); setAllocationError(""); setStreet(""); setAllocationColumn(""); setLevel(""); setAllocationQuantity("");
-              }}>+ Alocar produtos</button>
+              }}>+ Alocar produtos</button>}
             </div>
 
             {allocationError && <p className="form-error page-error" role="alert">{allocationError}</p>}
@@ -737,8 +870,14 @@ export default function Home() {
             )}
 
             <section className="commitment-panel">
-              <div className="panel-heading"><div><h2>Produtos alocados</h2><p>Posições registradas no Estoque GH.</p></div></div>
-              {allocations.length ? (
+              <div className="panel-heading allocation-panel-heading">
+                <div><h2>{allocationView === "gh" ? "Produtos alocados" : "Produtos alocados — Devolução"}</h2><p>{allocationView === "gh" ? "Posições registradas no Estoque GH." : "Controle dos itens devolvidos por pedidos de empréstimo."}</p></div>
+                <div className="allocation-tabs" role="tablist" aria-label="Tipo de estoque alocado">
+                  <button className={allocationView === "gh" ? "active" : ""} type="button" role="tab" aria-selected={allocationView === "gh"} onClick={() => setAllocationView("gh")}>Estoque GH</button>
+                  <button className={allocationView === "returns" ? "active" : ""} type="button" role="tab" aria-selected={allocationView === "returns"} onClick={() => setAllocationView("returns")}>Devolução</button>
+                </div>
+              </div>
+              {allocationView === "gh" ? allocations.length ? (
                 <div className="allocation-table-wrap">
                   <table className="allocation-table">
                     <thead><tr><th aria-sort={allocationSort === "asc" ? "ascending" : "descending"}><button type="button" onClick={() => setAllocationSort((current) => current === "asc" ? "desc" : "asc")}>Produto <span aria-hidden="true">{allocationSort === "asc" ? "↑" : "↓"}</span></button></th><th>Descrição</th><th>Rua</th><th>Coluna</th><th>Nível</th><th className="numeric">Quantidade</th></tr></thead>
@@ -758,11 +897,58 @@ export default function Home() {
                 </div>
               ) : (
                 <div className="empty-state"><strong>Nenhum produto alocado</strong><p>Use “Alocar produtos” para registrar a primeira posição.</p></div>
-              )}
+              ) : returnAllocations.length ? (
+                <div className="allocation-table-wrap">
+                  <table className="allocation-table return-allocation-table">
+                    <thead><tr><th>Produto</th><th>Descrição</th><th>Pedido</th><th>Rua</th><th>Coluna</th><th>Nível</th><th className="numeric">Quantidade</th></tr></thead>
+                    <tbody>{returnAllocations.map((position) => <tr key={position.id}><td><span className="item-code">{position.code}</span></td><td className="description">{position.description} · {position.finish}</td><td>{position.order_number}</td><td>{position.street}</td><td>{position.column}</td><td>{position.level}</td><td className="numeric strong-number">{position.quantity}</td></tr>)}</tbody>
+                  </table>
+                </div>
+              ) : <div className="empty-state"><strong>Nenhum produto devolvido</strong><p>Os itens de empréstimo aparecerão aqui após a devolução ser confirmada pela Logística.</p></div>}
             </section>
           </>
         )}
       </section>
+
+      {commitmentChoiceOpen && (
+        <div className="dialog-backdrop" role="presentation">
+          <section className="commitment-dialog choice-dialog" role="dialog" aria-modal="true" aria-labelledby="commitment-choice-title">
+            <div className="dialog-heading">
+              <div><p className="context">Comercial</p><h2 id="commitment-choice-title">Novo empenho</h2></div>
+              <button className="close-button" type="button" onClick={() => setCommitmentChoiceOpen(false)} aria-label="Fechar">×</button>
+            </div>
+            <p className="choice-intro">Escolha como deseja comprometer o saldo disponível do Estoque GH.</p>
+            <div className="commitment-choices">
+              <button type="button" onClick={() => { setCommitmentType("reservation"); setCommitmentChoiceOpen(false); openCommitmentForm(); }}>
+                <strong>Reserva de itens</strong>
+                <span>Reserve uma quantidade informando o motivo ou destinatário.</span>
+              </button>
+              <button type="button" onClick={() => { setCommitmentType("order"); setCommitmentChoiceOpen(false); openCommitmentForm(); }}>
+                <strong>Empenho de pedido</strong>
+                <span>Vincule a reserva a um número de pedido obrigatório.</span>
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {commitmentToCancel && (
+        <div className="dialog-backdrop" role="presentation">
+          <section className="commitment-dialog compact-dialog" role="dialog" aria-modal="true" aria-labelledby="cancel-document-title">
+            <div className="dialog-heading">
+              <div><p className="context">Comercial</p><h2 id="cancel-document-title">Cancelar documento?</h2></div>
+              <button className="close-button" type="button" onClick={() => setCommitmentToCancel(null)} aria-label="Fechar">×</button>
+            </div>
+            <p className="dialog-copy">{commitmentToCancel.type === "reservation" ? commitmentToCancel.reservation_code : `Pedido nº ${commitmentToCancel.order_number}`} · {commitmentToCancel.items.length} {commitmentToCancel.items.length === 1 ? "item" : "itens"}</p>
+            <p className="cancel-warning">Todos os itens deste documento serão cancelados e as quantidades voltarão a ficar disponíveis no Estoque GH.</p>
+            {formError && <p className="form-error" role="alert">{formError}</p>}
+            <div className="dialog-actions">
+              <button className="secondary-button" type="button" onClick={() => setCommitmentToCancel(null)}>Manter documento</button>
+              <button className="danger-button" type="button" onClick={() => void confirmCommitmentCancellation()}>Confirmar cancelamento</button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {formOpen && (
         <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
@@ -772,39 +958,43 @@ export default function Home() {
             <div className="dialog-heading">
               <div>
                 <p className="context">Comercial</p>
-                <h2 id="new-commitment-title">Novo empenho</h2>
+                <h2 id="new-commitment-title">{commitmentType === "order" ? "Empenho de pedido" : "Reserva de itens"}</h2>
               </div>
               <button className="close-button" type="button" onClick={() => setFormOpen(false)} aria-label="Fechar">×</button>
             </div>
             <form onSubmit={submitCommitment}>
-              <label className="field">
-                <span>Código do item</span>
-                <select value={selectedCode} onChange={(event) => {
-                  setSelectedCode(event.target.value);
-                  setFormError("");
-                }}>
-                  {items.map((item) => (
-                    <option key={item.code} value={item.code}>{item.code} — {item.description} ({item.finish})</option>
-                  ))}
-                </select>
-              </label>
-
-              <div className="selected-stock">
-                <div><span>Estoque GH</span><strong>{selectedItem.gh}</strong></div>
-                <div><span>Já empenhado</span><strong>{selectedItem.ghCommitted}</strong></div>
-                <div><span>Disponível</span><strong>{selectedAvailable}</strong></div>
+              <div className="document-lines">
+                <div className="document-lines-heading"><strong>Itens</strong><span>{commitmentLines.length} {commitmentLines.length === 1 ? "item" : "itens"}</span></div>
+                {commitmentLines.map((line, index) => {
+                  const item = items.find((candidate) => candidate.code === line.code) ?? items[0];
+                  const available = Math.max(item.gh - item.ghCommitted, 0);
+                  return (
+                    <div className="document-line" key={index}>
+                      <label className="field"><span>Produto</span><select value={line.code} onChange={(event) => setCommitmentLines((current) => current.map((entry, lineIndex) => lineIndex === index ? { ...entry, code: event.target.value } : entry))}>{items.map((candidate) => <option key={candidate.code} value={candidate.code}>{candidate.code} — {candidate.description} ({candidate.finish})</option>)}</select></label>
+                      <label className="field"><span>Quantidade</span><input type="number" min="1" step="1" value={line.quantity} onChange={(event) => { setCommitmentLines((current) => current.map((entry, lineIndex) => lineIndex === index ? { ...entry, quantity: event.target.value } : entry)); setFormError(""); }} placeholder="Ex.: 10" /></label>
+                      <span className="line-available">{available} disponível</span>
+                      {commitmentLines.length > 1 && <button className="remove-line" type="button" onClick={() => setCommitmentLines((current) => current.filter((_, lineIndex) => lineIndex !== index))} aria-label={`Remover item ${index + 1}`}>×</button>}
+                    </div>
+                  );
+                })}
+                <button className="add-line" type="button" onClick={() => setCommitmentLines((current) => [...current, { code: items[0].code, quantity: "" }])}>+ Adicionar item</button>
               </div>
 
-              <label className="field">
-                <span>Quantidade a empenhar</span>
-                <input type="number" min="1" step="1" value={quantity} onChange={(event) => {
-                  setQuantity(event.target.value);
-                  setFormError("");
-                }} placeholder="Ex.: 10" />
-              </label>
+              {commitmentType === "order" && (
+                <>
+                  <label className="field">
+                    <span>Número do pedido</span>
+                    <input value={commitmentOrderNumber} onChange={(event) => { setCommitmentOrderNumber(event.target.value); setFormError(""); }} placeholder="Ex.: 10458" />
+                  </label>
+                  <label className="checkbox-field">
+                    <input type="checkbox" checked={loanItems} onChange={(event) => setLoanItems(event.target.checked)} />
+                    <span><strong>Itens de empréstimo</strong><small>Marque quando os itens deverão retornar futuramente ao Estoque Devolução.</small></span>
+                  </label>
+                </>
+              )}
 
               <label className="field">
-                <span>Observação</span>
+                <span>Observação{commitmentType === "order" ? " (opcional)" : ""}</span>
                 <textarea value={note} onChange={(event) => {
                   setNote(event.target.value);
                   setFormError("");
@@ -879,60 +1069,59 @@ export default function Home() {
 
       {logisticsForm && (
         <div className="dialog-backdrop" role="presentation">
-          <section className="commitment-dialog" role="dialog" aria-modal="true" aria-labelledby="logistics-form-title">
+          <section className="commitment-dialog logistics-dialog" role="dialog" aria-modal="true" aria-labelledby="logistics-form-title">
             <div className="dialog-heading">
               <div>
                 <p className="context">Logística</p>
-                <h2 id="logistics-form-title">{logisticsForm === "exit" ? "Saída de produtos" : "Ajuste de estoque"}</h2>
+                <h2 id="logistics-form-title">{logisticsForm === "exit" ? "Separação de item por pedido" : "Ajuste de estoque"}</h2>
               </div>
               <button className="close-button" type="button" onClick={() => setLogisticsForm(null)} aria-label="Fechar">×</button>
             </div>
-            <form onSubmit={submitLogistics}>
-              {logisticsForm === "exit" && (
-                <div className="split-fields">
-                  <label className="field"><span>Número da nota fiscal</span><input value={invoiceNumber} onChange={(event) => setInvoiceNumber(event.target.value)} /></label>
-                  <label className="field"><span>Número do pedido</span><input value={orderNumber} onChange={(event) => setOrderNumber(event.target.value)} /></label>
-                </div>
-              )}
-              <label className="field"><span>Código do produto</span>
-                <select value={logisticsCode} onChange={(event) => { setLogisticsCode(event.target.value); setLogisticsAllocationId(""); setLogisticsError(""); }}>
-                  {items.map((item) => <option key={item.code} value={item.code}>{item.code} — {item.description} ({item.finish})</option>)}
-                </select>
-              </label>
-              <div className="selected-stock">
-                <div><span>Estoque GH</span><strong>{logisticsItem.gh}</strong></div>
-                <div><span>Empenhado</span><strong>{logisticsItem.ghCommitted}</strong></div>
-                <div><span>Disponível</span><strong>{Math.max(logisticsItem.gh - logisticsItem.ghCommitted, 0)}</strong></div>
-              </div>
-              {logisticsForm === "exit" ? (
-                <>
-                  <label className="field"><span>Posição de saída</span>
-                    <select value={logisticsAllocationId} onChange={(event) => { setLogisticsAllocationId(event.target.value); setLogisticsError(""); }}>
-                      <option value="">Selecione rua, coluna e nível</option>
-                      {logisticsPositions.map((position) => (
-                        <option key={position.id} value={position.id}>Rua {position.street} · Coluna {position.column} · Nível {position.level} — {position.quantity} unidades</option>
-                      ))}
-                    </select>
-                  </label>
-                  {logisticsPositions.length === 0 && <p className="field-hint warning">Este produto não possui posição alocada para saída.</p>}
-                  {logisticsPosition && <p className="field-hint">Disponível nesta posição: <strong>{logisticsPosition.quantity}</strong></p>}
-                  <label className="field"><span>Quantidade a retirar</span><input type="number" min="1" max={logisticsPosition?.quantity} step="1" value={logisticsQuantity} onChange={(event) => { setLogisticsQuantity(event.target.value); setLogisticsError(""); }} /></label>
-                </>
-              ) : (
+            {logisticsForm === "exit" ? (
+              <form onSubmit={separateOrder}>
+                <label className="field"><span>Pedido empenhado pelo Comercial</span>
+                  <select value={selectedLogisticsOrder?.id ?? ""} onChange={(event) => {
+                    const order = openLogisticsOrders.find((candidate) => candidate.id === Number(event.target.value)) ?? null;
+                    setSelectedLogisticsOrder(order); setOrderSelections({}); setLogisticsError("");
+                  }}><option value="">Selecione o número do pedido</option>{openLogisticsOrders.map((order) => <option key={order.id} value={order.id}>Pedido {order.order_number}{order.loan_items ? " · Empréstimo" : ""}</option>)}</select>
+                </label>
+                {!openLogisticsOrders.length && <p className="field-hint warning">Não há pedidos empenhados aguardando separação.</p>}
+                {selectedLogisticsOrder?.items.map((item) => {
+                  const positions = allocations.filter((position) => position.code === item.code);
+                  const rows = orderSelections[item.id] ?? [{ allocationId: "", quantity: "" }];
+                  const selectedTotal = rows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+                  return <fieldset className="separation-item" key={item.id}><legend><strong>{item.code}</strong> · {item.description} ({item.finish}) <span>{item.quantity} unidades</span></legend>
+                    {rows.map((row, index) => <div className="source-line" key={index}>
+                      <label className="field"><span>Posição de saída</span><select value={row.allocationId} onChange={(event) => setOrderSelections((current) => ({ ...current, [item.id]: rows.map((entry, rowIndex) => rowIndex === index ? { ...entry, allocationId: event.target.value } : entry) }))}><option value="">Selecione rua, coluna e nível</option>{positions.map((position) => <option key={position.id} value={position.id}>Rua {position.street} · Coluna {position.column} · Nível {position.level} — {position.quantity} un.</option>)}</select></label>
+                      <label className="field"><span>Quantidade</span><input type="number" min="1" step="1" value={row.quantity} onChange={(event) => setOrderSelections((current) => ({ ...current, [item.id]: rows.map((entry, rowIndex) => rowIndex === index ? { ...entry, quantity: event.target.value } : entry) }))} /></label>
+                      {rows.length > 1 && <button className="remove-line source-remove" type="button" aria-label="Remover posição" onClick={() => setOrderSelections((current) => ({ ...current, [item.id]: rows.filter((_, rowIndex) => rowIndex !== index) }))}>×</button>}
+                    </div>)}
+                    <div className="source-summary"><button className="add-line" type="button" onClick={() => setOrderSelections((current) => ({ ...current, [item.id]: [...rows, { allocationId: "", quantity: "" }] }))}>+ Usar outra posição</button><span className={selectedTotal === item.quantity ? "complete" : ""}>{selectedTotal} de {item.quantity} selecionadas</span></div>
+                    {!positions.length && <p className="field-hint warning">Este produto não possui posição alocada.</p>}
+                  </fieldset>;
+                })}
+                {logisticsError && <p className="form-error" role="alert">{logisticsError}</p>}
+                <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setLogisticsForm(null)}>Cancelar</button><button className="primary-button" type="submit" disabled={!selectedLogisticsOrder}>Confirmar separação</button></div>
+              </form>
+            ) : (
+              <form onSubmit={submitLogistics}>
+                <label className="field"><span>Código do produto</span><select value={logisticsCode} onChange={(event) => { setLogisticsCode(event.target.value); setLogisticsError(""); }}>{items.map((item) => <option key={item.code} value={item.code}>{item.code} — {item.description} ({item.finish})</option>)}</select></label>
+                <div className="selected-stock"><div><span>Estoque GH</span><strong>{logisticsItem.gh}</strong></div><div><span>Empenhado</span><strong>{logisticsItem.ghCommitted}</strong></div><div><span>Disponível</span><strong>{Math.max(logisticsItem.gh - logisticsItem.ghCommitted, 0)}</strong></div></div>
                 <>
                   <label className="field"><span>Nova quantidade do Estoque GH</span><input type="number" min="0" step="1" value={adjustedQuantity} onChange={(event) => { setAdjustedQuantity(event.target.value); setLogisticsError(""); }} /></label>
                   <label className="field"><span>Motivo do ajuste</span><textarea rows={4} value={adjustmentNote} onChange={(event) => { setAdjustmentNote(event.target.value); setLogisticsError(""); }} placeholder="Explique por que o saldo está sendo ajustado" /></label>
                 </>
-              )}
-              {logisticsError && <p className="form-error" role="alert">{logisticsError}</p>}
-              <div className="dialog-actions">
-                <button className="secondary-button" type="button" onClick={() => setLogisticsForm(null)}>Cancelar</button>
-                <button className="primary-button" type="submit">{logisticsForm === "exit" ? "Confirmar saída" : "Salvar ajuste"}</button>
-              </div>
-            </form>
+                {logisticsError && <p className="form-error" role="alert">{logisticsError}</p>}
+                <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setLogisticsForm(null)}>Cancelar</button><button className="primary-button" type="submit">Salvar ajuste</button></div>
+              </form>
+            )}
           </section>
         </div>
       )}
+
+      {invoiceOrder && <div className="dialog-backdrop" role="presentation"><section className="commitment-dialog compact-dialog" role="dialog" aria-modal="true" aria-labelledby="invoice-title"><div className="dialog-heading"><div><p className="context">Pedido {invoiceOrder.order_number}</p><h2 id="invoice-title">Baixa por NF</h2></div><button className="close-button" type="button" onClick={() => setInvoiceOrder(null)} aria-label="Fechar">×</button></div><form onSubmit={submitInvoice}><label className="field"><span>Número da nota fiscal</span><input autoFocus value={invoiceNumber} onChange={(event) => { setInvoiceNumber(event.target.value); setLogisticsError(""); }} /></label>{invoiceOrder.loan_items ? <p className="field-hint">Após a baixa, este pedido ficará aguardando a devolução de todos os itens.</p> : null}{logisticsError && <p className="form-error" role="alert">{logisticsError}</p>}<div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setInvoiceOrder(null)}>Cancelar</button><button className="primary-button" type="submit">Confirmar saída</button></div></form></section></div>}
+
+      {returnOrder && <div className="dialog-backdrop" role="presentation"><section className="commitment-dialog" role="dialog" aria-modal="true" aria-labelledby="return-title"><div className="dialog-heading"><div><p className="context">Pedido {returnOrder.order_number}</p><h2 id="return-title">Registrar devolução integral</h2></div><button className="close-button" type="button" onClick={() => setReturnOrder(null)} aria-label="Fechar">×</button></div><form onSubmit={submitReturn}><p className="dialog-copy">Todos os itens abaixo retornarão juntos ao Estoque Devolução.</p>{returnOrder.items.map((item) => { const position = returnPositions[item.id] ?? { street: "", column: "", level: "" }; return <fieldset className="return-item" key={item.id}><legend><strong>{item.code}</strong> · {item.quantity} unidades</legend><div className="allocation-fields"><label className="field"><span>Rua</span><input value={position.street} onChange={(event) => setReturnPositions((current) => ({ ...current, [item.id]: { ...position, street: event.target.value } }))} /></label><label className="field"><span>Coluna</span><input value={position.column} onChange={(event) => setReturnPositions((current) => ({ ...current, [item.id]: { ...position, column: event.target.value } }))} /></label><label className="field"><span>Nível</span><input value={position.level} onChange={(event) => setReturnPositions((current) => ({ ...current, [item.id]: { ...position, level: event.target.value } }))} /></label></div></fieldset>; })}{logisticsError && <p className="form-error" role="alert">{logisticsError}</p>}<div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setReturnOrder(null)}>Cancelar</button><button className="primary-button" type="submit">Confirmar devolução</button></div></form></section></div>}
 
       {allocationFormOpen && (
         <div className="dialog-backdrop" role="presentation">

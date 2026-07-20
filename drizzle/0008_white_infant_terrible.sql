@@ -1,0 +1,1 @@
+ALTER TABLE `commitments` ADD `loan_items` integer DEFAULT false NOT NULL;
