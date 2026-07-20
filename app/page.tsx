@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import ValuationDashboard from "./valuation-dashboard";
 
 type StockItem = {
   code: string;
@@ -142,7 +143,7 @@ function GhBalance({ total, committed }: { total: number; committed: number }) {
 }
 
 export default function Home() {
-  const [activeSection, setActiveSection] = useState<"stock" | "commercial" | "foreign" | "logistics" | "allocation">("stock");
+  const [activeSection, setActiveSection] = useState<"stock" | "dashboard" | "commercial" | "foreign" | "logistics" | "allocation">("stock");
   const [items, setItems] = useState(initialItems);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; direction: "asc" | "desc" }>({ key: "code", direction: "asc" });
@@ -540,6 +541,10 @@ export default function Home() {
           <span aria-hidden="true">▦</span>
           Estoque
         </button>
+        <button className={activeSection === "dashboard" ? "nav-item active" : "nav-item"} type="button" onClick={() => setActiveSection("dashboard")}>
+          <span aria-hidden="true">▥</span>
+          Dashboard
+        </button>
         <button className={activeSection === "commercial" ? "nav-item active" : "nav-item"} type="button" onClick={() => setActiveSection("commercial")}>
           <span aria-hidden="true">◎</span>
           Comercial
@@ -559,7 +564,9 @@ export default function Home() {
       </aside>
 
       <section className="workspace" id="conteudo">
-        {activeSection === "stock" ? (
+        {activeSection === "dashboard" ? (
+          <ValuationDashboard items={items} />
+        ) : activeSection === "stock" ? (
           <>
         <div className="page-heading">
           <div>
