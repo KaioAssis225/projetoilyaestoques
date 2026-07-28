@@ -46,3 +46,5 @@ next-env.d.ts
 .pnpm-store/
 pnpm-lock.yaml
 pnpm-workspace.yaml
+.codex-*.log
+gh-pages-dist/
