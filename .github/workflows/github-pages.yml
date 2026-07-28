@@ -3,6 +3,7 @@ name: Publicar demonstração no GitHub Pages
 on:
   push:
     branches:
+      - main
       - agent/dashboard-estoque
   workflow_dispatch:
 
