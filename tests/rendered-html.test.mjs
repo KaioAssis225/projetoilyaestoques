@@ -37,6 +37,8 @@ test("supports multi-item embarque orders and China withdrawals in Foreign Trade
     readFile(new URL("github-pages/mock-api.ts", root), "utf8"),
   ]);
   assert.match(page, /Embarque \(nº do pedido \/ contêiner\)/);
+  assert.match(page, /Código da Nota Fiscal/);
+  assert.match(foreignTrade, /invoice_code/);
   assert.match(page, /\+ Adicionar produto/);
   assert.match(page, /Qtd\. disponível/);
   assert.match(page, /Qtd\. a retirar/);
@@ -55,6 +57,7 @@ test("links embarque tasks and position transfers in Allocation", async () => {
     readFile(new URL("github-pages/mock-api.ts", root), "utf8"),
   ]);
   assert.match(page, /Embarques a caminho do GH/);
+  assert.match(page, /Editar produtos/);
   assert.match(page, /Transferir posição/);
   assert.match(page, /groupedAllocationTasks/);
   assert.match(allocationsRoute, /shipment_identifier/);

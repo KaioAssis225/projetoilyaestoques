@@ -16,6 +16,7 @@ export const inventory = sqliteTable("inventory", {
 export const purchaseOrders = sqliteTable("purchase_orders", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   shipmentIdentifier: text("shipment_identifier").notNull().unique(),
+  invoiceCode: text("invoice_code"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
@@ -62,6 +63,7 @@ export const logisticsEvents = sqliteTable("logistics_events", {
 export const allocations = sqliteTable("allocations", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   code: text("code").notNull(),
+  shipmentIdentifier: text("shipment_identifier"),
   street: text("street").notNull(),
   column: text("column").notNull(),
   level: text("level").notNull(),

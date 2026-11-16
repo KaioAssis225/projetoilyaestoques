@@ -18,6 +18,7 @@ async function ensureAllocationsTable() {
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS allocations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       code TEXT NOT NULL,
+      shipment_identifier TEXT,
       street TEXT NOT NULL,
       "column" TEXT NOT NULL,
       level TEXT NOT NULL,
@@ -52,6 +53,11 @@ async function ensureAllocationsTable() {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
   ]);
+
+  const allocationColumns = await env.DB.prepare("PRAGMA table_info(allocations)").all<{ name: string }>();
+  if (!allocationColumns.results.some((column) => column.name === "shipment_identifier")) {
+    await env.DB.prepare("ALTER TABLE allocations ADD COLUMN shipment_identifier TEXT").run();
+  }
 }
 
 function groupIncomingShipments(rows: IncomingRow[]) {
@@ -133,9 +139,9 @@ async function transferAllocation(payload: Record<string, unknown>) {
     return Response.json({ error: "Informe posição de destino (rua, coluna, nível) e quantidade válida para transferência." }, { status: 400 });
   }
 
-  const source = await env.DB.prepare(`SELECT id, code, street, "column", level, quantity FROM allocations WHERE id = ?`)
+  const source = await env.DB.prepare(`SELECT id, code, shipment_identifier, street, "column", level, quantity FROM allocations WHERE id = ?`)
     .bind(allocationId)
-    .first<{ id: number; code: string; street: string; column: string; level: string; quantity: number }>();
+    .first<{ id: number; code: string; shipment_identifier: string | null; street: string; column: string; level: string; quantity: number }>();
 
   if (!source) {
     return Response.json({ error: "Posição de origem não encontrada." }, { status: 404 });
@@ -151,21 +157,17 @@ async function transferAllocation(payload: Record<string, unknown>) {
     return Response.json({ error: "A posição de destino deve ser diferente da posição atual." }, { status: 400 });
   }
 
-  const destination = await env.DB.prepare(`SELECT id FROM allocations
-    WHERE code = ? AND street = ? COLLATE NOCASE AND "column" = ? COLLATE NOCASE AND level = ? COLLATE NOCASE
-    LIMIT 1`)
-    .bind(source.code, street, column, level)
-    .first<{ id: number }>();
-
-  const statements = [
-    quantity === source.quantity
-      ? env.DB.prepare("DELETE FROM allocations WHERE id = ?").bind(source.id)
-      : env.DB.prepare("UPDATE allocations SET quantity = quantity - ? WHERE id = ?").bind(quantity, source.id),
-    destination
-      ? env.DB.prepare("UPDATE allocations SET quantity = quantity + ? WHERE id = ?").bind(quantity, destination.id)
-      : env.DB.prepare(`INSERT INTO allocations (code, street, "column", level, quantity) VALUES (?, ?, ?, ?, ?)`)
-          .bind(source.code, street, column, level, quantity),
-  ];
+  const statements = quantity === source.quantity
+    ? [
+        env.DB.prepare(`UPDATE allocations SET street = ?, "column" = ?, level = ? WHERE id = ?`)
+          .bind(street, column, level, source.id),
+      ]
+    : [
+        env.DB.prepare("UPDATE allocations SET quantity = quantity - ? WHERE id = ?")
+          .bind(quantity, source.id),
+        env.DB.prepare(`INSERT INTO allocations (code, shipment_identifier, street, "column", level, quantity) VALUES (?, ?, ?, ?, ?, ?)`)
+          .bind(source.code, source.shipment_identifier, street, column, level, quantity),
+      ];
 
   await env.DB.batch(statements);
   return null;
@@ -211,26 +213,24 @@ export async function POST(request: Request) {
     return Response.json({ error: `Quantidade maior que a disponível para alocação. Restam ${available} unidades.` }, { status: 400 });
   }
 
+  let shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim() || null;
   if (Number.isInteger(taskId) && taskId > 0) {
-    const task = await env.DB.prepare("SELECT quantity, allocated_quantity FROM allocation_tasks WHERE id = ? AND code = ? AND status = 'pending'")
-      .bind(taskId, code).first<{ quantity: number; allocated_quantity: number }>();
+    const task = await env.DB.prepare(`SELECT t.quantity, t.allocated_quantity,
+      COALESCE(po.shipment_identifier, s.shipment_identifier) AS shipment_identifier
+      FROM allocation_tasks t
+      LEFT JOIN shipments s ON s.id = t.shipment_id
+      LEFT JOIN purchase_orders po ON po.id = s.purchase_order_id
+      WHERE t.id = ? AND t.code = ? AND t.status = 'pending'`)
+      .bind(taskId, code).first<{ quantity: number; allocated_quantity: number; shipment_identifier: string | null }>();
     const taskRemaining = task ? task.quantity - task.allocated_quantity : 0;
     if (!task || quantity > taskRemaining) {
       return Response.json({ error: `Quantidade maior que a pendência de alocação. Restam ${taskRemaining} unidades desta chegada.` }, { status: 400 });
     }
+    if (task.shipment_identifier) shipmentIdentifier = task.shipment_identifier;
   }
 
-  const existingPosition = await env.DB.prepare(`SELECT id FROM allocations
-    WHERE code = ? AND street = ? COLLATE NOCASE AND "column" = ? COLLATE NOCASE AND level = ? COLLATE NOCASE
-    LIMIT 1`)
-    .bind(code, street, column, level).first<{ id: number }>();
-  if (existingPosition) {
-    await env.DB.prepare("UPDATE allocations SET quantity = quantity + ? WHERE id = ?")
-      .bind(quantity, existingPosition.id).run();
-  } else {
-    await env.DB.prepare(`INSERT INTO allocations (code, street, "column", level, quantity) VALUES (?, ?, ?, ?, ?)`)
-      .bind(code, street, column, level, quantity).run();
-  }
+  await env.DB.prepare(`INSERT INTO allocations (code, shipment_identifier, street, "column", level, quantity) VALUES (?, ?, ?, ?, ?, ?)`)
+    .bind(code, shipmentIdentifier, street, column, level, quantity).run();
   if (Number.isInteger(taskId) && taskId > 0) {
     const task = await env.DB.prepare("SELECT quantity, allocated_quantity FROM allocation_tasks WHERE id = ? AND code = ? AND status = 'pending'")
       .bind(taskId, code).first<{ quantity: number; allocated_quantity: number }>();

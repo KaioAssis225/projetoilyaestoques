@@ -37,6 +37,7 @@ type Shipment = {
 type PurchaseOrder = {
   id: number;
   shipment_identifier: string;
+  invoice_code?: string | null;
   created_at: string;
   items: Array<{
     item_id: number;
@@ -88,6 +89,7 @@ type LogisticsOrder = {
 type Allocation = {
   id: number;
   code: string;
+  shipment_identifier?: string | null;
   description: string;
   finish: string;
   street: string;
@@ -192,6 +194,7 @@ export default function Home() {
   const [foreignError, setForeignError] = useState("");
   const [foreignForm, setForeignForm] = useState<"purchase" | "dispatch" | null>(null);
   const [foreignShipmentIdentifier, setForeignShipmentIdentifier] = useState("");
+  const [foreignInvoiceCode, setForeignInvoiceCode] = useState("");
   const [purchaseLines, setPurchaseLines] = useState([{ code: initialItems[0].code, unitValueUsd: "", totalQuantity: "", chinaQuantity: "" }]);
   const [dispatchLines, setDispatchLines] = useState([{ code: initialItems[0].code, unitValueUsd: "", quantity: "" }]);
   const [dueDate, setDueDate] = useState("");
@@ -267,10 +270,11 @@ export default function Home() {
   );
   const activeAllocationTask = allocationTasks.find((task) => task.id === selectedAllocationTask) ?? null;
   const groupedAllocationTasks = useMemo(() => {
-    const groups = new Map<string, { shipment_identifier: string; tasks: AllocationTask[]; total: number; allocated: number }>();
+    const groups = new Map<string, { id: string; shipment_identifier: string; tasks: AllocationTask[]; total: number; allocated: number }>();
     for (const task of allocationTasks) {
-      const key = task.shipment_identifier || "Entrada avulsa";
-      const group = groups.get(key) ?? { shipment_identifier: key, tasks: [], total: 0, allocated: 0 };
+      const key = task.shipment_id ? `embarque-${task.shipment_identifier}` : `avulso-${task.id}`;
+      const label = task.shipment_identifier || "Entrada avulsa";
+      const group = groups.get(key) ?? { id: key, shipment_identifier: label, tasks: [], total: 0, allocated: 0 };
       group.tasks.push(task);
       group.total += task.quantity;
       group.allocated += task.allocated_quantity;
@@ -446,6 +450,7 @@ export default function Home() {
         await sendForeignAction({
           action: "purchase",
           shipmentIdentifier: foreignShipmentIdentifier,
+          invoiceCode: foreignInvoiceCode,
           dueDate,
           items: purchaseLines.map((line) => ({
             code: line.code.trim().toUpperCase(),
@@ -808,6 +813,7 @@ export default function Home() {
                   setForeignForm("purchase");
                   setForeignError("");
                   setForeignShipmentIdentifier("");
+                  setForeignInvoiceCode("");
                   setPurchaseLines([{ code: items[0]?.code ?? "", unitValueUsd: "", totalQuantity: "", chinaQuantity: "" }]);
                   setDueDate("");
                 }}>+ Novo pedido de compra</button>
@@ -884,6 +890,7 @@ export default function Home() {
                         <div className="order-card-head">
                           <strong>Embarque {order.shipment_identifier}</strong>
                           <div className="order-card-meta">
+                            {order.invoice_code ? <span>NF: {order.invoice_code}</span> : null}
                             <span>{order.items.length} {order.items.length === 1 ? "produto" : "produtos"}</span>
                             <span>{totalUnits} unidades</span>
                             <span>Total: {formatUsdCents(totalUsdCents)}</span>
@@ -985,7 +992,7 @@ export default function Home() {
               </div>
               {allocationView === "gh" && <button className="primary-button" type="button" onClick={() => {
                 setAllocationFormOpen(true); setSelectedAllocationTask(null); setAllocationError(""); setStreet(""); setAllocationColumn(""); setLevel(""); setAllocationQuantity("");
-              }}>+ Alocar produtos</button>}
+              }}>Editar produtos</button>}
             </div>
 
             {allocationError && <p className="form-error page-error" role="alert">{allocationError}</p>}
@@ -999,7 +1006,7 @@ export default function Home() {
                   {groupedAllocationTasks.map((group) => {
                     const percent = group.total > 0 ? Math.round((group.allocated / group.total) * 100) : 0;
                     return (
-                      <div className="allocation-embarque-group" key={group.shipment_identifier}>
+                      <div className="allocation-embarque-group" key={group.id}>
                         <div className="allocation-embarque-head">
                           <div className="allocation-embarque-title">
                             <strong>Embarque {group.shipment_identifier}</strong>
@@ -1080,12 +1087,13 @@ export default function Home() {
               {allocationView === "gh" ? allocations.length ? (
                 <div className="allocation-table-wrap">
                   <table className="allocation-table">
-                    <thead><tr><th aria-sort={allocationSort === "asc" ? "ascending" : "descending"}><button type="button" onClick={() => setAllocationSort((current) => current === "asc" ? "desc" : "asc")}>Produto <span aria-hidden="true">{allocationSort === "asc" ? "↑" : "↓"}</span></button></th><th>Descrição</th><th>Rua</th><th>Coluna</th><th>Nível</th><th className="numeric">Quantidade</th><th className="numeric">Ações</th></tr></thead>
+                    <thead><tr><th aria-sort={allocationSort === "asc" ? "ascending" : "descending"}><button type="button" onClick={() => setAllocationSort((current) => current === "asc" ? "desc" : "asc")}>Produto <span aria-hidden="true">{allocationSort === "asc" ? "↑" : "↓"}</span></button></th><th>Descrição</th><th>Embarque</th><th>Rua</th><th>Coluna</th><th>Nível</th><th className="numeric">Quantidade</th><th className="numeric">Ações</th></tr></thead>
                     <tbody>
                       {sortedAllocations.map((allocation) => (
                         <tr key={allocation.id}>
                           <td><span className="item-code">{allocation.code}</span></td>
                           <td className="description">{allocation.description} · {allocation.finish}</td>
+                          <td>{allocation.shipment_identifier || "—"}</td>
                           <td>{allocation.street}</td>
                           <td>{allocation.column}</td>
                           <td>{allocation.level}</td>
@@ -1110,7 +1118,7 @@ export default function Home() {
                   </table>
                 </div>
               ) : (
-                <div className="empty-state"><strong>Nenhum produto alocado</strong><p>Use “Alocar produtos” para registrar a primeira posição.</p></div>
+                <div className="empty-state"><strong>Nenhum produto alocado</strong><p>Use “Editar produtos” para registrar a primeira posição.</p></div>
               ) : returnAllocations.length ? (
                 <div className="allocation-table-wrap">
                   <table className="allocation-table return-allocation-table">
@@ -1256,15 +1264,38 @@ export default function Home() {
                 {items.map((item) => <option key={item.code} value={item.code}>{item.code} — {item.description} ({item.finish})</option>)}
               </datalist>
               <form onSubmit={submitForeignForm}>
-                <label className="field">
-                  <span>Embarque (nº do pedido / contêiner)</span>
-                  <input
-                    type="text"
-                    placeholder="Ex.: EMB-2026-001"
-                    value={foreignShipmentIdentifier}
-                    onChange={(event) => setForeignShipmentIdentifier(event.target.value)}
-                  />
-                </label>
+                {foreignForm === "purchase" ? (
+                  <div className="split-fields">
+                    <label className="field">
+                      <span>Embarque (nº do pedido / contêiner)</span>
+                      <input
+                        type="text"
+                        placeholder="Ex.: EMB-2026-001"
+                        value={foreignShipmentIdentifier}
+                        onChange={(event) => setForeignShipmentIdentifier(event.target.value)}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Código da Nota Fiscal</span>
+                      <input
+                        type="text"
+                        placeholder="Ex.: NF-12345"
+                        value={foreignInvoiceCode}
+                        onChange={(event) => setForeignInvoiceCode(event.target.value)}
+                      />
+                    </label>
+                  </div>
+                ) : (
+                  <label className="field">
+                    <span>Embarque (nº do pedido / contêiner)</span>
+                    <input
+                      type="text"
+                      placeholder="Ex.: EMB-2026-001"
+                      value={foreignShipmentIdentifier}
+                      onChange={(event) => setForeignShipmentIdentifier(event.target.value)}
+                    />
+                  </label>
+                )}
 
                 {foreignForm === "purchase" ? (
                   <>
@@ -1523,7 +1554,7 @@ export default function Home() {
         <div className="dialog-backdrop" role="presentation">
           <section className="commitment-dialog" role="dialog" aria-modal="true" aria-labelledby="allocation-form-title">
             <div className="dialog-heading">
-              <div><p className="context">Alocação</p><h2 id="allocation-form-title">Alocar produtos</h2></div>
+              <div><p className="context">Alocação</p><h2 id="allocation-form-title">{activeAllocationTask ? "Alocar produtos" : "Editar produtos"}</h2></div>
               <button className="close-button" type="button" onClick={() => setAllocationFormOpen(false)} aria-label="Fechar">×</button>
             </div>
             <form onSubmit={submitAllocation}>

@@ -32,12 +32,14 @@ function initialState(): DemoState {
       {
         id: 1,
         shipment_identifier: "EMB-DEMO-001",
+        invoice_code: "NF-DEMO-001",
         created_at: now(),
         items: [{ item_id: 1, code: "CD0100", unit_value_usd_cents: 4500, total_quantity: 70, china_quantity: 50, transit_quantity: 20 }],
       },
       {
         id: 2,
         shipment_identifier: "EMB-DEMO-002",
+        invoice_code: "NF-DEMO-002",
         created_at: now(),
         items: [{ item_id: 2, code: "MJ0100", unit_value_usd_cents: 12000, total_quantity: 70, china_quantity: 40, transit_quantity: 30 }],
       },
@@ -277,6 +279,7 @@ async function foreignApi(method: string, input: RequestInfo | URL, init?: Reque
 
   if (payload.action === "purchase") {
     const shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim();
+    const invoiceCode = String(payload.invoiceCode ?? "").trim() || null;
     const rawItems = Array.isArray(payload.items) ? payload.items : [];
     const dueDate = validDate(payload.dueDate);
     if (!shipmentIdentifier) return json({ error: "Informe o embarque." }, 400);
@@ -335,7 +338,7 @@ async function foreignApi(method: string, input: RequestInfo | URL, init?: Reque
         });
       }
     }
-    state.purchaseOrders.push({ id: purchaseId, shipment_identifier: shipmentIdentifier, created_at: now(), items: orderItems });
+    state.purchaseOrders.push({ id: purchaseId, shipment_identifier: shipmentIdentifier, invoice_code: invoiceCode, created_at: now(), items: orderItems });
   } else if (payload.action === "dispatch_china") {
     const shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim();
     const dueDate = validDate(payload.dueDate);
@@ -447,11 +450,23 @@ async function allocationsApi(method: string, input: RequestInfo | URL, init?: R
     if (source.street.toLowerCase() === street.toLowerCase() && source.column.toLowerCase() === column.toLowerCase() && source.level.toLowerCase() === level.toLowerCase()) {
       return json({ error: "A posição de destino deve ser diferente da posição atual." }, 400);
     }
-    source.quantity -= quantity;
-    if (source.quantity <= 0) state.allocations = state.allocations.filter((entry) => entry.id !== source.id);
-    const destination = state.allocations.find((entry) => entry.code === source.code && entry.street.toLowerCase() === street.toLowerCase() && entry.column.toLowerCase() === column.toLowerCase() && entry.level.toLowerCase() === level.toLowerCase());
-    if (destination) destination.quantity += quantity;
-    else state.allocations.push({ id: next("allocation"), code: source.code, street, column, level, quantity, created_at: now() });
+    if (quantity === source.quantity) {
+      source.street = street;
+      source.column = column;
+      source.level = level;
+    } else {
+      source.quantity -= quantity;
+      state.allocations.push({
+        id: next("allocation"),
+        code: source.code,
+        shipment_identifier: source.shipment_identifier ?? null,
+        street,
+        column,
+        level,
+        quantity,
+        created_at: now(),
+      });
+    }
     save();
     return json(allocationsData());
   }
@@ -459,10 +474,20 @@ async function allocationsApi(method: string, input: RequestInfo | URL, init?: R
   const quantity = Number(payload.quantity);
   const allocated = state.allocations.filter((entry) => entry.code === payload.code).reduce((sum, entry) => sum + entry.quantity, 0);
   if (!item || quantity > item.gh - allocated) return json({ error: "Quantidade maior que a disponível para alocação." }, 400);
-  const existing = state.allocations.find((entry) => entry.code === payload.code && entry.street.toLowerCase() === String(payload.street).toLowerCase() && entry.column.toLowerCase() === String(payload.column).toLowerCase() && entry.level.toLowerCase() === String(payload.level).toLowerCase());
-  if (existing) existing.quantity += quantity;
-  else state.allocations.push({ id: next("allocation"), code: payload.code, street: payload.street, column: payload.column, level: payload.level, quantity, created_at: now() });
   const task = state.allocationTasks.find((entry) => entry.id === Number(payload.taskId));
+  const shipment = task?.shipment_id ? state.shipments.find((entry) => entry.id === task.shipment_id) : null;
+  const order = shipment?.purchase_order_id ? state.purchaseOrders.find((entry) => entry.id === shipment.purchase_order_id) : null;
+  const shipmentIdentifier = order?.shipment_identifier ?? shipment?.shipment_identifier ?? (String(payload.shipmentIdentifier ?? "").trim() || null);
+  state.allocations.push({
+    id: next("allocation"),
+    code: payload.code,
+    shipment_identifier: shipmentIdentifier,
+    street: payload.street,
+    column: payload.column,
+    level: payload.level,
+    quantity,
+    created_at: now(),
+  });
   if (task) {
     task.allocated_quantity += quantity;
     if (task.allocated_quantity >= task.quantity) task.status = "completed";

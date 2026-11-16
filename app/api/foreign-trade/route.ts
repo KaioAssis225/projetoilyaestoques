@@ -28,6 +28,7 @@ type ShipmentRow = {
 type PurchaseOrderRow = {
   id: number;
   shipment_identifier: string;
+  invoice_code: string | null;
   created_at: string;
   item_id: number;
   code: string;
@@ -90,6 +91,7 @@ async function ensureDatabase() {
     await db.prepare(`CREATE TABLE purchase_orders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       shipment_identifier TEXT NOT NULL COLLATE NOCASE UNIQUE,
+      invoice_code TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`).run();
   } else if (purchaseOrderTable.results.some((column) => column.name === "code")) {
@@ -97,6 +99,7 @@ async function ensureDatabase() {
       db.prepare(`CREATE TABLE purchase_orders_v2 (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         shipment_identifier TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        invoice_code TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`),
       db.prepare(`INSERT INTO purchase_orders_v2 (id, shipment_identifier, created_at)
@@ -115,6 +118,8 @@ async function ensureDatabase() {
       db.prepare("DROP TABLE purchase_orders"),
       db.prepare("ALTER TABLE purchase_orders_v2 RENAME TO purchase_orders"),
     ]);
+  } else if (!purchaseOrderTable.results.some((column) => column.name === "invoice_code")) {
+    await db.prepare("ALTER TABLE purchase_orders ADD COLUMN invoice_code TEXT").run();
   }
 
   await db.prepare(`CREATE TABLE IF NOT EXISTS purchase_order_items (
@@ -237,11 +242,18 @@ function groupOrders(rows: PurchaseOrderRow[]) {
   const orders = new Map<number, {
     id: number;
     shipment_identifier: string;
+    invoice_code: string | null;
     created_at: string;
-    items: Array<Omit<PurchaseOrderRow, "id" | "shipment_identifier" | "created_at">>;
+    items: Array<Omit<PurchaseOrderRow, "id" | "shipment_identifier" | "invoice_code" | "created_at">>;
   }>();
   for (const row of rows) {
-    const order = orders.get(row.id) ?? { id: row.id, shipment_identifier: row.shipment_identifier, created_at: row.created_at, items: [] };
+    const order = orders.get(row.id) ?? {
+      id: row.id,
+      shipment_identifier: row.shipment_identifier,
+      invoice_code: row.invoice_code,
+      created_at: row.created_at,
+      items: [],
+    };
     order.items.push({
       item_id: row.item_id,
       code: row.code,
@@ -268,7 +280,7 @@ export async function GET() {
       LEFT JOIN purchase_orders po ON po.id = s.purchase_order_id
       WHERE s.stage != 'completed'
       ORDER BY s.due_date, s.id`).all<ShipmentRow>(),
-    env.DB.prepare(`SELECT po.id, po.shipment_identifier, po.created_at, poi.id AS item_id,
+    env.DB.prepare(`SELECT po.id, po.shipment_identifier, po.invoice_code, po.created_at, poi.id AS item_id,
       poi.code, i.description, i.finish, poi.unit_value_usd_cents,
       poi.total_quantity, poi.china_quantity, poi.transit_quantity
       FROM purchase_orders po
@@ -286,6 +298,7 @@ export async function GET() {
 
 async function purchase(payload: Record<string, unknown>) {
   const shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim();
+  const invoiceCode = String(payload.invoiceCode ?? "").trim() || null;
   const rawItems = Array.isArray(payload.items) ? payload.items as Array<Record<string, unknown>> : [];
   const dueDate = validDate(payload.dueDate);
   if (!shipmentIdentifier) return Response.json({ error: "Informe o embarque." }, { status: 400 });
@@ -317,8 +330,8 @@ async function purchase(payload: Record<string, unknown>) {
 
   let purchaseOrderId: number | null = null;
   try {
-    const orderResult = await env.DB.prepare("INSERT INTO purchase_orders (shipment_identifier) VALUES (?)")
-      .bind(shipmentIdentifier).run();
+    const orderResult = await env.DB.prepare("INSERT INTO purchase_orders (shipment_identifier, invoice_code) VALUES (?, ?)")
+      .bind(shipmentIdentifier, invoiceCode).run();
     purchaseOrderId = Number(orderResult.meta.last_row_id);
     const statements = items.flatMap((item) => {
       const itemStatements = [
