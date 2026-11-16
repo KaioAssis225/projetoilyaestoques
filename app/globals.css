@@ -266,4 +266,25 @@ button:focus-visible, a:focus-visible { outline: 3px solid oklch(0.67 0.17 250 /
 .order-card-meta { display: flex; flex-wrap: wrap; gap: 14px; color: var(--muted); font-size: 11px; }
 @media (max-width: 860px) { .foreign-purchase-grid, .foreign-dispatch-grid { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 540px) { .foreign-purchase-grid, .foreign-dispatch-grid { grid-template-columns: 1fr; } }
+.incoming-panel { margin-bottom: 20px; }
+.incoming-list { display: grid; }
+.incoming-row { display: grid; grid-template-columns: minmax(180px, 1fr) 1.4fr auto; align-items: center; gap: 16px; padding: 14px 20px; border-top: 1px solid var(--line); font-size: 12px; }
+.incoming-row:first-child { border-top: 0; }
+.incoming-row > div { display: grid; gap: 4px; }
+.incoming-row span { color: var(--muted); font-size: 11px; }
+.allocation-embarque-list { display: grid; gap: 14px; }
+.allocation-embarque-group { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.allocation-embarque-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; background: var(--subtle); border-bottom: 1px solid var(--line); }
+.allocation-embarque-title { display: flex; align-items: center; gap: 10px; }
+.allocation-embarque-title strong { color: var(--accent); font-size: 13px; }
+.allocation-embarque-title span { color: var(--muted); font-size: 11px; }
+.allocation-progress-wrap { display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--muted); }
+.allocation-progress-track { width: 120px; height: 7px; overflow: hidden; border-radius: 999px; background: var(--line); }
+.allocation-progress-fill { height: 100%; display: block; border-radius: inherit; background: var(--accent); transition: width 160ms ease; }
+.task-banner { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 12px 14px; border: 1px solid oklch(0.84 0.08 250); border-radius: 10px; background: oklch(0.96 0.03 250); }
+.task-banner div { display: grid; gap: 2px; }
+.task-banner span { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+.task-banner strong { color: var(--accent); font-size: 14px; }
+.allocation-action-cell { text-align: right; white-space: nowrap; }
+@media (max-width: 760px) { .incoming-row { grid-template-columns: 1fr; gap: 8px; } .task-banner { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; } }

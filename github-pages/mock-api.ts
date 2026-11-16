@@ -215,7 +215,22 @@ function allocationsData() {
   return {
     inventory: state.inventory,
     allocations: state.allocations.map(enrichedAllocation).reverse(),
-    tasks: state.allocationTasks.filter((task) => task.status === "pending").map((task) => ({ ...task, ...pickProduct(task.code) })),
+    tasks: state.allocationTasks
+      .filter((task) => task.status === "pending")
+      .map((task) => {
+        const shipment = state.shipments.find((entry) => entry.id === task.shipment_id);
+        const order = shipment?.purchase_order_id
+          ? state.purchaseOrders.find((entry) => entry.id === shipment.purchase_order_id)
+          : null;
+        return {
+          ...task,
+          ...pickProduct(task.code),
+          shipment_identifier: order?.shipment_identifier ?? shipment?.shipment_identifier ?? "Entrada avulsa",
+          due_date: shipment?.due_date ?? null,
+          source: shipment?.source ?? null,
+        };
+      }),
+    incomingShipments: groupDemoShipments(),
   };
 }
 
@@ -417,6 +432,29 @@ async function foreignApi(method: string, input: RequestInfo | URL, init?: Reque
 async function allocationsApi(method: string, input: RequestInfo | URL, init?: RequestInit) {
   if (method === "GET") return json(allocationsData());
   const payload = await bodyOf(input, init);
+  if (payload.action === "transfer") {
+    const allocationId = Number(payload.allocationId);
+    const street = String(payload.street ?? "").trim();
+    const column = String(payload.column ?? "").trim();
+    const level = String(payload.level ?? "").trim();
+    const quantity = Number(payload.quantity);
+    if (!Number.isInteger(allocationId) || allocationId <= 0 || !street || !column || !level || !Number.isInteger(quantity) || quantity <= 0) {
+      return json({ error: "Informe posição de destino (rua, coluna, nível) e quantidade válida para transferência." }, 400);
+    }
+    const source = state.allocations.find((entry) => entry.id === allocationId);
+    if (!source) return json({ error: "Posição de origem não encontrada." }, 404);
+    if (quantity > source.quantity) return json({ error: `Quantidade maior que o saldo da posição (${source.quantity} un.).` }, 400);
+    if (source.street.toLowerCase() === street.toLowerCase() && source.column.toLowerCase() === column.toLowerCase() && source.level.toLowerCase() === level.toLowerCase()) {
+      return json({ error: "A posição de destino deve ser diferente da posição atual." }, 400);
+    }
+    source.quantity -= quantity;
+    if (source.quantity <= 0) state.allocations = state.allocations.filter((entry) => entry.id !== source.id);
+    const destination = state.allocations.find((entry) => entry.code === source.code && entry.street.toLowerCase() === street.toLowerCase() && entry.column.toLowerCase() === column.toLowerCase() && entry.level.toLowerCase() === level.toLowerCase());
+    if (destination) destination.quantity += quantity;
+    else state.allocations.push({ id: next("allocation"), code: source.code, street, column, level, quantity, created_at: now() });
+    save();
+    return json(allocationsData());
+  }
   const item = inventoryItem(String(payload.code));
   const quantity = Number(payload.quantity);
   const allocated = state.allocations.filter((entry) => entry.code === payload.code).reduce((sum, entry) => sum + entry.quantity, 0);

@@ -47,3 +47,18 @@ test("supports multi-item embarque orders and China withdrawals in Foreign Trade
   assert.match(schema, /shipmentIdentifier/);
   assert.match(mockApi, /shipment_identifier/);
 });
+
+test("links embarque tasks and position transfers in Allocation", async () => {
+  const [page, allocationsRoute, mockApi] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/api/allocations/route.ts", root), "utf8"),
+    readFile(new URL("github-pages/mock-api.ts", root), "utf8"),
+  ]);
+  assert.match(page, /Embarques a caminho do GH/);
+  assert.match(page, /Transferir posição/);
+  assert.match(page, /groupedAllocationTasks/);
+  assert.match(allocationsRoute, /shipment_identifier/);
+  assert.match(allocationsRoute, /action === "transfer"/);
+  assert.match(allocationsRoute, /incomingShipments/);
+  assert.match(mockApi, /incomingShipments/);
+});

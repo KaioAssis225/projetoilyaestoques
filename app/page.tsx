@@ -100,12 +100,23 @@ type Allocation = {
 type AllocationTask = {
   id: number;
   shipment_id: number | null;
+  shipment_identifier: string;
+  due_date?: string | null;
+  source?: string | null;
   code: string;
   description: string;
   finish: string;
   quantity: number;
   allocated_quantity: number;
   status: string;
+};
+
+type IncomingShipment = {
+  id: string;
+  shipment_identifier: string;
+  stage: "transit" | "port";
+  due_date: string;
+  items: Array<{ shipment_id: number; code: string; description: string; finish: string; quantity: number }>;
 };
 
 type ReturnAllocation = {
@@ -203,8 +214,15 @@ export default function Home() {
   const [logisticsError, setLogisticsError] = useState("");
   const [allocations, setAllocations] = useState<Allocation[]>([]);
   const [allocationTasks, setAllocationTasks] = useState<AllocationTask[]>([]);
+  const [incomingShipments, setIncomingShipments] = useState<IncomingShipment[]>([]);
   const [selectedAllocationTask, setSelectedAllocationTask] = useState<number | null>(null);
   const [allocationFormOpen, setAllocationFormOpen] = useState(false);
+  const [editingAllocation, setEditingAllocation] = useState<Allocation | null>(null);
+  const [transferStreet, setTransferStreet] = useState("");
+  const [transferColumn, setTransferColumn] = useState("");
+  const [transferLevel, setTransferLevel] = useState("");
+  const [transferQuantity, setTransferQuantity] = useState("");
+  const [transferError, setTransferError] = useState("");
   const [allocationCode, setAllocationCode] = useState(initialItems[0].code);
   const [street, setStreet] = useState("");
   const [allocationColumn, setAllocationColumn] = useState("");
@@ -247,6 +265,19 @@ export default function Home() {
     }),
     [allocations, allocationSort],
   );
+  const activeAllocationTask = allocationTasks.find((task) => task.id === selectedAllocationTask) ?? null;
+  const groupedAllocationTasks = useMemo(() => {
+    const groups = new Map<string, { shipment_identifier: string; tasks: AllocationTask[]; total: number; allocated: number }>();
+    for (const task of allocationTasks) {
+      const key = task.shipment_identifier || "Entrada avulsa";
+      const group = groups.get(key) ?? { shipment_identifier: key, tasks: [], total: 0, allocated: 0 };
+      group.tasks.push(task);
+      group.total += task.quantity;
+      group.allocated += task.allocated_quantity;
+      groups.set(key, group);
+    }
+    return [...groups.values()];
+  }, [allocationTasks]);
   const today = new Date().toISOString().slice(0, 10);
 
   async function refreshForeignTrade() {
@@ -270,9 +301,10 @@ export default function Home() {
 
   async function refreshAllocations() {
     const response = await fetch("/api/allocations");
-    const data = await response.json() as { allocations?: Allocation[]; tasks?: AllocationTask[] };
+    const data = await response.json() as { allocations?: Allocation[]; tasks?: AllocationTask[]; incomingShipments?: IncomingShipment[] };
     setAllocations(data.allocations ?? []);
     setAllocationTasks(data.tasks ?? []);
+    setIncomingShipments(data.incomingShipments ?? []);
   }
 
   function applyLogisticsData(data: { inventory?: Array<Omit<StockItem, "ghCommitted">>; events?: LogisticsEvent[]; openOrders?: LogisticsOrder[]; logisticsOrders?: LogisticsOrder[]; returnAllocations?: ReturnAllocation[] }) {
@@ -550,15 +582,44 @@ export default function Home() {
           taskId: selectedAllocationTask,
         }),
       });
-      const data = await response.json() as { allocations?: Allocation[]; tasks?: AllocationTask[]; error?: string };
+      const data = await response.json() as { allocations?: Allocation[]; tasks?: AllocationTask[]; incomingShipments?: IncomingShipment[]; error?: string };
       if (!response.ok) throw new Error(data.error ?? "Não foi possível alocar os produtos.");
       setAllocations(data.allocations ?? []);
       setAllocationTasks(data.tasks ?? []);
+      setIncomingShipments(data.incomingShipments ?? []);
       setAllocationFormOpen(false);
       setSelectedAllocationTask(null);
       setAllocationError("");
     } catch (error) {
       setAllocationError(error instanceof Error ? error.message : "Não foi possível alocar os produtos.");
+    }
+  }
+
+  async function submitTransfer(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editingAllocation) return;
+    try {
+      const response = await fetch("/api/allocations", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "transfer",
+          allocationId: editingAllocation.id,
+          street: transferStreet,
+          column: transferColumn,
+          level: transferLevel,
+          quantity: transferQuantity,
+        }),
+      });
+      const data = await response.json() as { allocations?: Allocation[]; tasks?: AllocationTask[]; incomingShipments?: IncomingShipment[]; error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Não foi possível transferir a posição.");
+      setAllocations(data.allocations ?? []);
+      setAllocationTasks(data.tasks ?? []);
+      setIncomingShipments(data.incomingShipments ?? []);
+      setEditingAllocation(null);
+      setTransferError("");
+    } catch (error) {
+      setTransferError(error instanceof Error ? error.message : "Não foi possível transferir a posição.");
     }
   }
 
@@ -929,29 +990,81 @@ export default function Home() {
 
             {allocationError && <p className="form-error page-error" role="alert">{allocationError}</p>}
 
-            {allocationTasks.length > 0 && (
+            {groupedAllocationTasks.length > 0 && (
               <section className="allocation-tasks" aria-labelledby="allocation-tasks-title">
                 <div className="panel-heading">
-                  <div><h2 id="allocation-tasks-title">Aguardando alocação</h2><p>Produtos recebidos do Comércio Exterior no Estoque GH.</p></div>
+                  <div><h2 id="allocation-tasks-title">Aguardando alocação</h2><p>Produtos recebidos no Estoque GH agrupados por embarque.</p></div>
                 </div>
-                <div className="task-list">
-                  {allocationTasks.map((task) => {
-                    const remaining = task.quantity - task.allocated_quantity;
+                <div className="allocation-embarque-list">
+                  {groupedAllocationTasks.map((group) => {
+                    const percent = group.total > 0 ? Math.round((group.allocated / group.total) * 100) : 0;
                     return (
-                      <article className="allocation-task-row" key={task.id}>
-                        <div><strong>{task.code}</strong><span>{task.description} · {task.finish}</span></div>
-                        <div><span>Recebido no GH</span><strong>{task.quantity}</strong></div>
-                        <div><span>A alocar</span><strong>{remaining}</strong></div>
-                        <button className="primary-button compact" type="button" onClick={() => {
-                          setAllocationCode(task.code);
-                          setAllocationQuantity(String(remaining));
-                          setSelectedAllocationTask(task.id);
-                          setStreet(""); setAllocationColumn(""); setLevel(""); setAllocationError("");
-                          setAllocationFormOpen(true);
-                        }}>Alocar agora</button>
-                      </article>
+                      <div className="allocation-embarque-group" key={group.shipment_identifier}>
+                        <div className="allocation-embarque-head">
+                          <div className="allocation-embarque-title">
+                            <strong>Embarque {group.shipment_identifier}</strong>
+                            <span>{group.tasks.length} {group.tasks.length === 1 ? "produto" : "produtos"}</span>
+                          </div>
+                          <div className="allocation-progress-wrap">
+                            <span>{group.allocated}/{group.total} un. alocadas</span>
+                            <span className="allocation-progress-track" aria-hidden="true">
+                              <span className="allocation-progress-fill" style={{ width: `${percent}%` }} />
+                            </span>
+                          </div>
+                        </div>
+                        <div className="task-list">
+                          {group.tasks.map((task) => {
+                            const remaining = task.quantity - task.allocated_quantity;
+                            return (
+                              <article className="allocation-task-row" key={task.id}>
+                                <div><strong>{task.code}</strong><span>{task.description} · {task.finish}</span></div>
+                                <div><span>Recebido no GH</span><strong>{task.quantity}</strong></div>
+                                <div><span>A alocar</span><strong>{remaining}</strong></div>
+                                <button className="primary-button compact" type="button" onClick={() => {
+                                  setAllocationCode(task.code);
+                                  setAllocationQuantity(String(remaining));
+                                  setSelectedAllocationTask(task.id);
+                                  setStreet(""); setAllocationColumn(""); setLevel(""); setAllocationError("");
+                                  setAllocationFormOpen(true);
+                                }}>Alocar agora</button>
+                              </article>
+                            );
+                          })}
+                        </div>
+                      </div>
                     );
                   })}
+                </div>
+              </section>
+            )}
+
+            {incomingShipments.length > 0 && (
+              <section className="commitment-panel incoming-panel" aria-labelledby="incoming-shipments-title">
+                <div className="panel-heading">
+                  <div><h2 id="incoming-shipments-title">Embarques a caminho do GH</h2><p>Previsão de contêineres em trânsito ou no porto para planejamento de endereços.</p></div>
+                </div>
+                <div className="incoming-list">
+                  {incomingShipments.map((shipment) => (
+                    <article className="incoming-row" key={shipment.id}>
+                      <div>
+                        <strong>Embarque {shipment.shipment_identifier}</strong>
+                        <span>{shipment.stage === "transit" ? "China → Porto" : "Porto → Estoque GH"} · Previsão {new Date(`${shipment.due_date}T12:00:00`).toLocaleDateString("pt-BR")}</span>
+                      </div>
+                      <div className="shipment-items-list">
+                        {shipment.items.map((item) => (
+                          <div className="shipment-item-line" key={item.shipment_id}>
+                            <strong>{item.code}</strong>
+                            <span>{item.description}</span>
+                            <span>{item.quantity} un.</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div>
+                        <strong>{shipment.items.reduce((sum, item) => sum + item.quantity, 0)} un.</strong>
+                        <span>Previsto</span>
+                      </div>
+                    </article>
+                  ))}
                 </div>
               </section>
             )}
@@ -967,7 +1080,7 @@ export default function Home() {
               {allocationView === "gh" ? allocations.length ? (
                 <div className="allocation-table-wrap">
                   <table className="allocation-table">
-                    <thead><tr><th aria-sort={allocationSort === "asc" ? "ascending" : "descending"}><button type="button" onClick={() => setAllocationSort((current) => current === "asc" ? "desc" : "asc")}>Produto <span aria-hidden="true">{allocationSort === "asc" ? "↑" : "↓"}</span></button></th><th>Descrição</th><th>Rua</th><th>Coluna</th><th>Nível</th><th className="numeric">Quantidade</th></tr></thead>
+                    <thead><tr><th aria-sort={allocationSort === "asc" ? "ascending" : "descending"}><button type="button" onClick={() => setAllocationSort((current) => current === "asc" ? "desc" : "asc")}>Produto <span aria-hidden="true">{allocationSort === "asc" ? "↑" : "↓"}</span></button></th><th>Descrição</th><th>Rua</th><th>Coluna</th><th>Nível</th><th className="numeric">Quantidade</th><th className="numeric">Ações</th></tr></thead>
                     <tbody>
                       {sortedAllocations.map((allocation) => (
                         <tr key={allocation.id}>
@@ -977,6 +1090,20 @@ export default function Home() {
                           <td>{allocation.column}</td>
                           <td>{allocation.level}</td>
                           <td className="numeric strong-number">{allocation.quantity}</td>
+                          <td className="allocation-action-cell">
+                            <button
+                              className="secondary-button compact"
+                              type="button"
+                              onClick={() => {
+                                setEditingAllocation(allocation);
+                                setTransferStreet(allocation.street);
+                                setTransferColumn(allocation.column);
+                                setTransferLevel(allocation.level);
+                                setTransferQuantity(String(allocation.quantity));
+                                setTransferError("");
+                              }}
+                            >Editar</button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -1400,8 +1527,15 @@ export default function Home() {
               <button className="close-button" type="button" onClick={() => setAllocationFormOpen(false)} aria-label="Fechar">×</button>
             </div>
             <form onSubmit={submitAllocation}>
+              {activeAllocationTask && (
+                <div className="task-banner">
+                  <div><span>Embarque</span><strong>{activeAllocationTask.shipment_identifier}</strong></div>
+                  <div><span>Produto</span><strong>{activeAllocationTask.code}</strong></div>
+                  <div><span>Falta alocar</span><strong>{activeAllocationTask.quantity - activeAllocationTask.allocated_quantity} un.</strong></div>
+                </div>
+              )}
               <label className="field"><span>Código do produto</span>
-                <select value={allocationCode} onChange={(event) => { setAllocationCode(event.target.value); setAllocationError(""); }}>
+                <select value={allocationCode} disabled={Boolean(activeAllocationTask)} onChange={(event) => { setAllocationCode(event.target.value); setAllocationError(""); }}>
                   {items.map((item) => <option key={item.code} value={item.code}>{item.code} — {item.description} ({item.finish})</option>)}
                 </select>
               </label>
@@ -1418,6 +1552,31 @@ export default function Home() {
               <label className="field"><span>Quantidade a alocar</span><input type="number" min="1" max={availableToAllocate} step="1" value={allocationQuantity} onChange={(event) => { setAllocationQuantity(event.target.value); setAllocationError(""); }} /></label>
               {allocationError && <p className="form-error" role="alert">{allocationError}</p>}
               <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setAllocationFormOpen(false)}>Cancelar</button><button className="primary-button" type="submit">Confirmar alocação</button></div>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {editingAllocation && (
+        <div className="dialog-backdrop" role="presentation">
+          <section className="commitment-dialog" role="dialog" aria-modal="true" aria-labelledby="transfer-form-title">
+            <div className="dialog-heading">
+              <div><p className="context">{editingAllocation.code} — {editingAllocation.description}</p><h2 id="transfer-form-title">Transferir posição</h2></div>
+              <button className="close-button" type="button" onClick={() => setEditingAllocation(null)} aria-label="Fechar">×</button>
+            </div>
+            <form onSubmit={submitTransfer}>
+              <div className="selected-stock">
+                <div><span>Origem</span><strong>Rua {editingAllocation.street} · Col. {editingAllocation.column} · Nív. {editingAllocation.level}</strong></div>
+                <div><span>Saldo na posição</span><strong>{editingAllocation.quantity} un.</strong></div>
+              </div>
+              <div className="allocation-fields">
+                <label className="field"><span>Nova Rua</span><input value={transferStreet} onChange={(event) => { setTransferStreet(event.target.value); setTransferError(""); }} /></label>
+                <label className="field"><span>Nova Coluna</span><input value={transferColumn} onChange={(event) => { setTransferColumn(event.target.value); setTransferError(""); }} /></label>
+                <label className="field"><span>Novo Nível</span><input value={transferLevel} onChange={(event) => { setTransferLevel(event.target.value); setTransferError(""); }} /></label>
+              </div>
+              <label className="field"><span>Quantidade a transferir</span><input type="number" min="1" max={editingAllocation.quantity} step="1" value={transferQuantity} onChange={(event) => { setTransferQuantity(event.target.value); setTransferError(""); }} /></label>
+              {transferError && <p className="form-error" role="alert">{transferError}</p>}
+              <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setEditingAllocation(null)}>Cancelar</button><button className="primary-button" type="submit">Confirmar transferência</button></div>
             </form>
           </section>
         </div>
