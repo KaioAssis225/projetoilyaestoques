@@ -28,3 +28,22 @@ test("keeps the integrated logistics workflow and return stock in the API", asyn
   assert.match(schema, /returnAllocations/);
   assert.match(schema, /logisticsOrderSources/);
 });
+
+test("supports multi-item embarque orders and China withdrawals in Foreign Trade", async () => {
+  const [page, foreignTrade, schema, mockApi] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/api/foreign-trade/route.ts", root), "utf8"),
+    readFile(new URL("db/schema.ts", root), "utf8"),
+    readFile(new URL("github-pages/mock-api.ts", root), "utf8"),
+  ]);
+  assert.match(page, /Embarque \(nº do pedido \/ contêiner\)/);
+  assert.match(page, /\+ Adicionar produto/);
+  assert.match(page, /Qtd\. disponível/);
+  assert.match(page, /Qtd\. a retirar/);
+  assert.match(foreignTrade, /shipment_identifier/);
+  assert.match(foreignTrade, /purchase_order_items/);
+  assert.match(foreignTrade, /dispatchChina/);
+  assert.match(schema, /purchaseOrderItems/);
+  assert.match(schema, /shipmentIdentifier/);
+  assert.match(mockApi, /shipment_identifier/);
+});

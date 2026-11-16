@@ -14,7 +14,7 @@ type DemoState = {
   counters: Record<string, number>;
 };
 
-const STORAGE_KEY = "ilya-estoque-github-pages-demo-v1";
+const STORAGE_KEY = "ilya-estoque-github-pages-demo-v2";
 const originalFetch = window.fetch.bind(window);
 
 function initialState(): DemoState {
@@ -25,12 +25,22 @@ function initialState(): DemoState {
       { code: "SF0100", description: "Sofá", finish: "Areia", china: 60, transit: 50, port: 0, gh: 100, returns: 2, updated_at: now() },
     ],
     shipments: [
-      { id: 1, code: "CD0100", quantity: 20, source: "purchase", stage: "transit", due_date: dateAfter(7) },
-      { id: 2, code: "MJ0100", quantity: 30, source: "purchase", stage: "port", due_date: dateAfter(3) },
+      { id: 1, purchase_order_id: 1, shipment_identifier: "EMB-DEMO-001", code: "CD0100", quantity: 20, unit_value_usd_cents: 4500, source: "purchase", stage: "transit", due_date: dateAfter(7) },
+      { id: 2, purchase_order_id: 2, shipment_identifier: "EMB-DEMO-002", code: "MJ0100", quantity: 30, unit_value_usd_cents: 12000, source: "purchase", stage: "port", due_date: dateAfter(3) },
     ],
     purchaseOrders: [
-      { id: 1, code: "CD0100", total_quantity: 70, china_quantity: 50, transit_quantity: 20, created_at: now() },
-      { id: 2, code: "MJ0100", total_quantity: 70, china_quantity: 40, transit_quantity: 30, created_at: now() },
+      {
+        id: 1,
+        shipment_identifier: "EMB-DEMO-001",
+        created_at: now(),
+        items: [{ item_id: 1, code: "CD0100", unit_value_usd_cents: 4500, total_quantity: 70, china_quantity: 50, transit_quantity: 20 }],
+      },
+      {
+        id: 2,
+        shipment_identifier: "EMB-DEMO-002",
+        created_at: now(),
+        items: [{ item_id: 2, code: "MJ0100", unit_value_usd_cents: 12000, total_quantity: 70, china_quantity: 40, transit_quantity: 30 }],
+      },
     ],
     commitments: [],
     allocations: [
@@ -46,7 +56,7 @@ function initialState(): DemoState {
       { id: 1, logistics_order_item_id: 0, code: "CD0100", street: "DEV", column: "01", level: "01", quantity: 4, order_number: "DEMO-001", created_at: now() },
       { id: 2, logistics_order_item_id: 0, code: "SF0100", street: "DEV", column: "02", level: "01", quantity: 2, order_number: "DEMO-002", created_at: now() },
     ],
-    counters: { shipment: 2, purchase: 2, commitment: 0, commitmentItem: 0, allocation: 4, task: 0, logisticsEvent: 0, logisticsOrder: 0, logisticsItem: 0, returnAllocation: 2 },
+    counters: { shipment: 2, purchase: 2, purchaseItem: 2, commitment: 0, commitmentItem: 0, allocation: 4, task: 0, logisticsEvent: 0, logisticsOrder: 0, logisticsItem: 0, returnAllocation: 2 },
   };
 }
 
@@ -97,6 +107,73 @@ function pickProduct(code: string) {
   return { description: item?.description ?? "", finish: item?.finish ?? "" };
 }
 
+function parseUsdCents(value: unknown) {
+  const normalized = String(value ?? "").trim().replace(",", ".");
+  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
+  const [whole, decimal = ""] = normalized.split(".");
+  const cents = Number(whole) * 100 + Number(decimal.padEnd(2, "0"));
+  return Number.isSafeInteger(cents) && cents > 0 ? cents : null;
+}
+
+function validDate(value: unknown) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+}
+
+function shipmentIdentifierExists(identifier: string) {
+  const needle = identifier.toLowerCase();
+  return state.purchaseOrders.some((order) => String(order.shipment_identifier ?? "").toLowerCase() === needle)
+    || state.shipments.some((shipment) => String(shipment.shipment_identifier ?? "").toLowerCase() === needle);
+}
+
+function groupDemoShipments() {
+  const active = state.shipments
+    .filter((shipment) => shipment.stage !== "completed")
+    .sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)) || Number(a.id) - Number(b.id));
+
+  const groups = new Map<string, DemoRecord>();
+  for (const row of active) {
+    const order = row.purchase_order_id ? state.purchaseOrders.find((entry) => entry.id === row.purchase_order_id) : null;
+    const shipmentIdentifier = order?.shipment_identifier ?? row.shipment_identifier ?? `Transferência ${row.id}`;
+    const key = row.purchase_order_id
+      ? `purchase-${row.purchase_order_id}`
+      : row.shipment_identifier
+        ? `china-${String(row.shipment_identifier).toLowerCase()}`
+        : `shipment-${row.id}`;
+    const group = groups.get(key) ?? {
+      id: key,
+      purchase_order_id: row.purchase_order_id ?? null,
+      shipment_identifier: shipmentIdentifier,
+      source: row.source,
+      stage: row.stage,
+      due_date: row.due_date,
+      items: [],
+    };
+    group.items.push({
+      shipment_id: row.id,
+      code: row.code,
+      ...pickProduct(row.code),
+      quantity: row.quantity,
+      unit_value_usd_cents: row.unit_value_usd_cents ?? null,
+    });
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
+function matchingShipmentsFor(payload: DemoRecord) {
+  const purchaseOrderId = Number(payload.purchaseOrderId);
+  if (Number.isInteger(purchaseOrderId) && purchaseOrderId > 0) {
+    return state.shipments.filter((entry) => entry.purchase_order_id === purchaseOrderId && entry.stage !== "completed");
+  }
+  const shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim().toLowerCase();
+  if (shipmentIdentifier) {
+    const byIdentifier = state.shipments.filter((entry) => String(entry.shipment_identifier ?? "").toLowerCase() === shipmentIdentifier && entry.stage !== "completed");
+    if (byIdentifier.length) return byIdentifier;
+  }
+  const shipmentId = Number(payload.shipmentId);
+  return state.shipments.filter((entry) => entry.id === shipmentId && entry.stage !== "completed");
+}
+
 function commitmentDocuments() {
   return state.commitments.map((document) => ({
     ...document,
@@ -122,8 +199,15 @@ function logisticsData() {
 function foreignData() {
   return {
     inventory: state.inventory,
-    shipments: state.shipments.filter((shipment) => shipment.stage !== "completed").sort((a, b) => String(a.due_date).localeCompare(String(b.due_date))),
-    orders: state.purchaseOrders.slice().reverse(),
+    shipments: groupDemoShipments(),
+    orders: state.purchaseOrders
+      .slice()
+      .sort((a, b) => Number(b.id) - Number(a.id))
+      .slice(0, 30)
+      .map((order) => ({
+        ...order,
+        items: (order.items ?? []).map((item: DemoRecord) => ({ ...item, ...pickProduct(item.code) })),
+      })),
   };
 }
 
@@ -175,36 +259,157 @@ async function commitmentsApi(url: URL, method: string, input: RequestInfo | URL
 async function foreignApi(method: string, input: RequestInfo | URL, init?: RequestInit) {
   if (method === "GET") return json(foreignData());
   const payload = await bodyOf(input, init);
-  const item = inventoryItem(String(payload.code));
-  if (!item) return json({ error: "Código de item inválido." }, 400);
+
   if (payload.action === "purchase") {
-    const total = Number(payload.totalQuantity), china = Number(payload.chinaQuantity), transit = Number(payload.transitQuantity);
-    if (china + transit !== total) return json({ error: "A distribuição deve somar a quantidade total." }, 400);
-    item.china += china; item.transit += transit; item.updated_at = now();
-    const purchaseId = next("purchase");
-    state.purchaseOrders.push({ id: purchaseId, code: item.code, total_quantity: total, china_quantity: china, transit_quantity: transit, created_at: now() });
-    if (transit > 0) state.shipments.push({ id: next("shipment"), purchase_order_id: purchaseId, code: item.code, quantity: transit, source: "purchase", stage: "transit", due_date: payload.dueDate });
-  } else if (payload.action === "dispatch_china") {
-    const quantity = Number(payload.quantity);
-    if (quantity > item.china) return json({ error: "Quantidade maior que o disponível na China." }, 400);
-    item.china -= quantity; item.transit += quantity; item.updated_at = now();
-    state.shipments.push({ id: next("shipment"), code: item.code, quantity, source: "china", stage: "transit", due_date: payload.dueDate });
-  } else if (payload.action === "reschedule") {
-    const shipment = state.shipments.find((entry) => entry.id === Number(payload.shipmentId));
-    if (shipment) shipment.due_date = payload.dueDate;
-  } else if (payload.action === "confirm_arrival") {
-    const shipment = state.shipments.find((entry) => entry.id === Number(payload.shipmentId));
-    if (!shipment) return json({ error: "Remessa não encontrada." }, 404);
-    if (shipment.stage === "transit") {
-      item.transit -= shipment.quantity; item.port += shipment.quantity;
-      shipment.stage = "port"; shipment.due_date = payload.dueDate;
-    } else {
-      item.port -= shipment.quantity; item.gh += shipment.quantity; shipment.stage = "completed";
-      state.allocationTasks.push({ id: next("task"), shipment_id: shipment.id, code: item.code, quantity: shipment.quantity, allocated_quantity: 0, status: "pending", created_at: now() });
-      state.purchaseOrders = state.purchaseOrders.filter((order) => order.id !== shipment.purchase_order_id);
+    const shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim();
+    const rawItems = Array.isArray(payload.items) ? payload.items : [];
+    const dueDate = validDate(payload.dueDate);
+    if (!shipmentIdentifier) return json({ error: "Informe o embarque." }, 400);
+    if (!rawItems.length) return json({ error: "Adicione ao menos um item ao pedido." }, 400);
+    if (shipmentIdentifierExists(shipmentIdentifier)) return json({ error: "Já existe um embarque com este identificador." }, 409);
+
+    const seenCodes = new Set<string>();
+    const parsedItems: Array<{ code: string; total: number; china: number; transit: number; unitValueUsdCents: number }> = [];
+    for (const rawItem of rawItems) {
+      const code = String(rawItem.code ?? "").trim().toUpperCase();
+      const stock = inventoryItem(code);
+      if (!stock) return json({ error: `${code || "Item"}: código inválido.` }, 400);
+      if (seenCodes.has(code)) return json({ error: `${code}: o produto aparece mais de uma vez no pedido.` }, 400);
+      const total = Number(rawItem.totalQuantity);
+      const china = Number(rawItem.chinaQuantity);
+      const valueCents = parseUsdCents(rawItem.unitValueUsd);
+      if (!Number.isInteger(total) || total <= 0 || !Number.isInteger(china) || china < 0 || china > total) {
+        return json({ error: `${code}: informe quantidades inteiras válidas; a quantidade na China não pode superar o total.` }, 400);
+      }
+      if (!valueCents) {
+        return json({ error: `${code}: informe um valor unitário em dólar maior que zero, com até duas casas decimais.` }, 400);
+      }
+      seenCodes.add(code);
+      parsedItems.push({ code, total, china, transit: total - china, unitValueUsdCents: valueCents });
     }
-    item.updated_at = now();
+    if (parsedItems.some((item) => item.transit > 0) && !dueDate) {
+      return json({ error: "Informe a previsão de chegada ao Porto para o embarque." }, 400);
+    }
+
+    const purchaseId = next("purchase");
+    const orderItems: DemoRecord[] = [];
+    for (const entry of parsedItems) {
+      const stock = inventoryItem(entry.code)!;
+      stock.china += entry.china;
+      stock.transit += entry.transit;
+      stock.updated_at = now();
+      orderItems.push({
+        item_id: next("purchaseItem"),
+        code: entry.code,
+        unit_value_usd_cents: entry.unitValueUsdCents,
+        total_quantity: entry.total,
+        china_quantity: entry.china,
+        transit_quantity: entry.transit,
+      });
+      if (entry.transit > 0) {
+        state.shipments.push({
+          id: next("shipment"),
+          purchase_order_id: purchaseId,
+          shipment_identifier: shipmentIdentifier,
+          code: entry.code,
+          quantity: entry.transit,
+          unit_value_usd_cents: entry.unitValueUsdCents,
+          source: "purchase",
+          stage: "transit",
+          due_date: dueDate,
+        });
+      }
+    }
+    state.purchaseOrders.push({ id: purchaseId, shipment_identifier: shipmentIdentifier, created_at: now(), items: orderItems });
+  } else if (payload.action === "dispatch_china") {
+    const shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim();
+    const dueDate = validDate(payload.dueDate);
+    const rawItems = Array.isArray(payload.items)
+      ? payload.items
+      : payload.code
+        ? [{ code: payload.code, quantity: payload.quantity, unitValueUsd: payload.unitValueUsd }]
+        : [];
+    if (!shipmentIdentifier) return json({ error: "Informe o embarque." }, 400);
+    if (!dueDate) return json({ error: "Informe a data de chegada ao Porto." }, 400);
+    if (!rawItems.length) return json({ error: "Adicione ao menos um item para retirada." }, 400);
+    if (shipmentIdentifierExists(shipmentIdentifier)) return json({ error: "Já existe um embarque com este identificador." }, 409);
+
+    const seenCodes = new Set<string>();
+    const parsedItems: Array<{ code: string; quantity: number; unitValueUsdCents: number }> = [];
+    for (const rawItem of rawItems) {
+      const code = String(rawItem.code ?? "").trim().toUpperCase();
+      const stock = inventoryItem(code);
+      if (!stock) return json({ error: `${code || "Item"}: código inválido.` }, 400);
+      if (seenCodes.has(code)) return json({ error: `${code}: o produto aparece mais de uma vez na retirada.` }, 400);
+      const quantity = Number(rawItem.quantity);
+      const valueCents = parseUsdCents(rawItem.unitValueUsd);
+      if (!Number.isInteger(quantity) || quantity <= 0) return json({ error: `${code}: informe uma quantidade a retirar válida.` }, 400);
+      if (quantity > stock.china) return json({ error: `${code}: quantidade maior que o disponível na China. Saldo atual: ${stock.china}.` }, 400);
+      if (!valueCents) return json({ error: `${code}: informe um valor unitário em dólar maior que zero, com até duas casas decimais.` }, 400);
+      seenCodes.add(code);
+      parsedItems.push({ code, quantity, unitValueUsdCents: valueCents });
+    }
+    for (const entry of parsedItems) {
+      const stock = inventoryItem(entry.code)!;
+      stock.china -= entry.quantity;
+      stock.transit += entry.quantity;
+      stock.updated_at = now();
+      state.shipments.push({
+        id: next("shipment"),
+        purchase_order_id: null,
+        shipment_identifier: shipmentIdentifier,
+        code: entry.code,
+        quantity: entry.quantity,
+        unit_value_usd_cents: entry.unitValueUsdCents,
+        source: "china",
+        stage: "transit",
+        due_date: dueDate,
+      });
+    }
+  } else if (payload.action === "reschedule") {
+    const dueDate = validDate(payload.dueDate);
+    const matching = matchingShipmentsFor(payload);
+    if (!matching.length || !dueDate) return json({ error: "Informe uma remessa válida e a nova data prevista." }, 400);
+    for (const shipment of matching) shipment.due_date = dueDate;
+  } else if (payload.action === "confirm_arrival") {
+    const matching = matchingShipmentsFor(payload);
+    if (!matching.length) return json({ error: "Embarque não encontrado." }, 404);
+    const stages = new Set(matching.map((entry) => entry.stage));
+    if (stages.size !== 1) return json({ error: "Os itens deste embarque estão em etapas diferentes." }, 409);
+    const stage = matching[0].stage;
+    if (stage === "transit") {
+      const ghDueDate = validDate(payload.dueDate);
+      if (!ghDueDate) return json({ error: "Informe a previsão de chegada ao Estoque GH." }, 400);
+      for (const shipment of matching) {
+        const stock = inventoryItem(shipment.code)!;
+        stock.transit -= shipment.quantity;
+        stock.port += shipment.quantity;
+        stock.updated_at = now();
+        shipment.stage = "port";
+        shipment.due_date = ghDueDate;
+      }
+    } else {
+      for (const shipment of matching) {
+        const stock = inventoryItem(shipment.code)!;
+        stock.port -= shipment.quantity;
+        stock.gh += shipment.quantity;
+        stock.updated_at = now();
+        shipment.stage = "completed";
+        state.allocationTasks.push({
+          id: next("task"),
+          shipment_id: shipment.id,
+          code: shipment.code,
+          quantity: shipment.quantity,
+          allocated_quantity: 0,
+          status: "pending",
+          created_at: now(),
+        });
+      }
+    }
+  } else {
+    return json({ error: "Ação inválida." }, 400);
   }
+
   save();
   return json(foreignData());
 }

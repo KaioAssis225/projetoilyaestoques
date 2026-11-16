@@ -15,26 +15,45 @@ type StockItem = {
   ghCommitted: number;
 };
 
-type Shipment = {
-  id: number;
+type ShipmentItem = {
+  shipment_id: number;
   code: string;
+  description: string;
+  finish: string;
   quantity: number;
+  unit_value_usd_cents: number | null;
+};
+
+type Shipment = {
+  id: string;
+  purchase_order_id: number | null;
+  shipment_identifier: string;
   source: string;
   stage: "transit" | "port";
   due_date: string;
+  items: ShipmentItem[];
+};
+
+type PurchaseOrder = {
+  id: number;
+  shipment_identifier: string;
+  created_at: string;
+  items: Array<{
+    item_id: number;
+    code: string;
+    description: string;
+    finish: string;
+    unit_value_usd_cents: number;
+    total_quantity: number;
+    china_quantity: number;
+    transit_quantity: number;
+  }>;
 };
 
 type ForeignTradeData = {
   inventory: Array<Omit<StockItem, "ghCommitted">>;
   shipments: Shipment[];
-  orders: Array<{
-    id: number;
-    code: string;
-    total_quantity: number;
-    china_quantity: number;
-    transit_quantity: number;
-    created_at: string;
-  }>;
+  orders: PurchaseOrder[];
 };
 
 type LogisticsEvent = {
@@ -161,11 +180,9 @@ export default function Home() {
   const [foreignLoading, setForeignLoading] = useState(true);
   const [foreignError, setForeignError] = useState("");
   const [foreignForm, setForeignForm] = useState<"purchase" | "dispatch" | null>(null);
-  const [foreignCode, setForeignCode] = useState(initialItems[0].code);
-  const [totalQuantity, setTotalQuantity] = useState("");
-  const [chinaQuantity, setChinaQuantity] = useState("");
-  const [transitQuantity, setTransitQuantity] = useState("");
-  const [movementQuantity, setMovementQuantity] = useState("");
+  const [foreignShipmentIdentifier, setForeignShipmentIdentifier] = useState("");
+  const [purchaseLines, setPurchaseLines] = useState([{ code: initialItems[0].code, unitValueUsd: "", totalQuantity: "", chinaQuantity: "" }]);
+  const [dispatchLines, setDispatchLines] = useState([{ code: initialItems[0].code, unitValueUsd: "", quantity: "" }]);
   const [dueDate, setDueDate] = useState("");
   const [arrivalAction, setArrivalAction] = useState<{ shipment: Shipment; type: "arrived" | "delayed" } | null>(null);
   const [arrivalDate, setArrivalDate] = useState("");
@@ -197,7 +214,23 @@ export default function Home() {
   const [allocationSort, setAllocationSort] = useState<"asc" | "desc">("asc");
   const [allocationView, setAllocationView] = useState<"gh" | "returns">("gh");
 
-  const foreignItem = items.find((item) => item.code === foreignCode) ?? items[0];
+  function findStockItem(code: string) {
+    const normalized = code.trim().toUpperCase();
+    return items.find((item) => item.code === normalized) ?? null;
+  }
+
+  function parseUsdInput(value: string) {
+    const normalized = value.trim().replace(",", ".");
+    if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
+    const [whole, decimal = ""] = normalized.split(".");
+    const cents = Number(whole) * 100 + Number(decimal.padEnd(2, "0"));
+    return Number.isSafeInteger(cents) && cents > 0 ? cents : null;
+  }
+
+  function formatUsdCents(cents: number | null | undefined) {
+    if (cents === null || cents === undefined) return "—";
+    return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "USD" }).format(cents / 100);
+  }
   const logisticsItem = items.find((item) => item.code === logisticsCode) ?? items[0];
   const allocationItem = items.find((item) => item.code === allocationCode) ?? items[0];
   const allocatedForItem = allocations
@@ -380,18 +413,25 @@ export default function Home() {
       if (foreignForm === "purchase") {
         await sendForeignAction({
           action: "purchase",
-          code: foreignCode,
-          totalQuantity,
-          chinaQuantity: chinaQuantity || 0,
-          transitQuantity: transitQuantity || 0,
+          shipmentIdentifier: foreignShipmentIdentifier,
           dueDate,
+          items: purchaseLines.map((line) => ({
+            code: line.code.trim().toUpperCase(),
+            unitValueUsd: line.unitValueUsd,
+            totalQuantity: line.totalQuantity,
+            chinaQuantity: line.chinaQuantity === "" ? 0 : line.chinaQuantity,
+          })),
         });
       } else {
         await sendForeignAction({
           action: "dispatch_china",
-          code: foreignCode,
-          quantity: movementQuantity,
+          shipmentIdentifier: foreignShipmentIdentifier,
           dueDate,
+          items: dispatchLines.map((line) => ({
+            code: line.code.trim().toUpperCase(),
+            unitValueUsd: line.unitValueUsd,
+            quantity: line.quantity,
+          })),
         });
       }
       setForeignForm(null);
@@ -407,8 +447,9 @@ export default function Home() {
     try {
       await sendForeignAction({
         action: arrivalAction.type === "arrived" ? "confirm_arrival" : "reschedule",
-        code: arrivalAction.shipment.code,
-        shipmentId: arrivalAction.shipment.id,
+        purchaseOrderId: arrivalAction.shipment.purchase_order_id,
+        shipmentIdentifier: arrivalAction.shipment.shipment_identifier,
+        shipmentId: arrivalAction.shipment.items[0]?.shipment_id,
         dueDate: arrivalDate,
       });
       setArrivalAction(null);
@@ -696,10 +737,18 @@ export default function Home() {
               </div>
               <div className="heading-actions">
                 <button className="secondary-button" type="button" onClick={() => {
-                  setForeignForm("dispatch"); setForeignError(""); setMovementQuantity(""); setDueDate("");
+                  setForeignForm("dispatch");
+                  setForeignError("");
+                  setForeignShipmentIdentifier("");
+                  setDispatchLines([{ code: items[0]?.code ?? "", unitValueUsd: "", quantity: "" }]);
+                  setDueDate("");
                 }}>Retirar do estoque China</button>
                 <button className="primary-button" type="button" onClick={() => {
-                  setForeignForm("purchase"); setForeignError(""); setTotalQuantity(""); setChinaQuantity(""); setTransitQuantity(""); setDueDate("");
+                  setForeignForm("purchase");
+                  setForeignError("");
+                  setForeignShipmentIdentifier("");
+                  setPurchaseLines([{ code: items[0]?.code ?? "", unitValueUsd: "", totalQuantity: "", chinaQuantity: "" }]);
+                  setDueDate("");
                 }}>+ Novo pedido de compra</button>
               </div>
             </div>
@@ -710,7 +759,7 @@ export default function Home() {
               <div className="panel-heading">
                 <div>
                   <h2>Remessas em andamento</h2>
-                  <p>Confirme a chegada na data prevista ou informe uma nova previsão.</p>
+                  <p>Confirme a chegada do embarque na data prevista ou informe uma nova previsão.</p>
                 </div>
               </div>
               {foreignLoading ? (
@@ -719,11 +768,22 @@ export default function Home() {
                 <div className="shipment-list">
                   {foreignData.shipments.map((shipment) => {
                     const due = shipment.due_date <= today;
+                    const totalUnits = shipment.items.reduce((sum, item) => sum + item.quantity, 0);
                     return (
                       <article className={due ? "shipment-row due" : "shipment-row"} key={shipment.id}>
                         <div>
-                          <strong>{shipment.code}</strong>
-                          <span>{shipment.quantity} unidades</span>
+                          <strong>{shipment.shipment_identifier}</strong>
+                          <span>{totalUnits} unidades · {shipment.items.length} {shipment.items.length === 1 ? "item" : "itens"}</span>
+                          <div className="shipment-items-list">
+                            {shipment.items.map((item) => (
+                              <div className="shipment-item-line" key={item.shipment_id}>
+                                <strong>{item.code}</strong>
+                                <span>{item.description}</span>
+                                <span>{item.quantity} un.</span>
+                                {item.unit_value_usd_cents ? <span>{formatUsdCents(item.unit_value_usd_cents)}/un.</span> : null}
+                              </div>
+                            ))}
+                          </div>
                         </div>
                         <div>
                           <span>Etapa</span>
@@ -752,17 +812,37 @@ export default function Home() {
             </section>
 
             <section className="commitment-panel orders-panel">
-              <div className="panel-heading"><div><h2>Pedidos de compra</h2><p>Últimos pedidos registrados no banco.</p></div></div>
+              <div className="panel-heading"><div><h2>Pedidos de compra</h2><p>Últimos embarques registrados no banco.</p></div></div>
               {foreignData.orders.length ? (
                 <div className="order-list">
-                  {foreignData.orders.map((order) => (
-                    <article className="order-row" key={order.id}>
-                      <strong>{order.code}</strong>
-                      <span>{order.total_quantity} comprados</span>
-                      <span>{order.china_quantity} China</span>
-                      <span>{order.transit_quantity} em trânsito</span>
-                    </article>
-                  ))}
+                  {foreignData.orders.map((order) => {
+                    const totalUnits = order.items.reduce((sum, item) => sum + item.total_quantity, 0);
+                    const totalUsdCents = order.items.reduce((sum, item) => sum + item.unit_value_usd_cents * item.total_quantity, 0);
+                    return (
+                      <article className="order-card" key={order.id}>
+                        <div className="order-card-head">
+                          <strong>Embarque {order.shipment_identifier}</strong>
+                          <div className="order-card-meta">
+                            <span>{order.items.length} {order.items.length === 1 ? "produto" : "produtos"}</span>
+                            <span>{totalUnits} unidades</span>
+                            <span>Total: {formatUsdCents(totalUsdCents)}</span>
+                          </div>
+                        </div>
+                        <div className="order-items-list">
+                          {order.items.map((item) => (
+                            <div className="order-item-line" key={item.item_id}>
+                              <strong>{item.code}</strong>
+                              <span>{item.description}</span>
+                              <span>{formatUsdCents(item.unit_value_usd_cents)}/un.</span>
+                              <span>{item.total_quantity} comprados</span>
+                              <span>{item.china_quantity} China</span>
+                              <span>{item.transit_quantity} em trânsito</span>
+                            </div>
+                          ))}
+                        </div>
+                      </article>
+                    );
+                  })}
                 </div>
               ) : <div className="empty-state small-empty"><p>Nenhum pedido registrado.</p></div>}
             </section>
@@ -1019,51 +1099,233 @@ export default function Home() {
         </div>
       )}
 
-      {foreignForm && (
-        <div className="dialog-backdrop" role="presentation">
-          <section className="commitment-dialog" role="dialog" aria-modal="true" aria-labelledby="foreign-form-title">
-            <div className="dialog-heading">
-              <div><p className="context">Comércio Exterior</p><h2 id="foreign-form-title">{foreignForm === "purchase" ? "Novo pedido de compra" : "Retirar do estoque China"}</h2></div>
-              <button className="close-button" type="button" onClick={() => setForeignForm(null)} aria-label="Fechar">×</button>
-            </div>
-            <form onSubmit={submitForeignForm}>
-              <label className="field"><span>Código do item</span>
-                <select value={foreignCode} onChange={(event) => setForeignCode(event.target.value)}>
-                  {items.map((item) => <option key={item.code} value={item.code}>{item.code} — {item.description} ({item.finish})</option>)}
-                </select>
-              </label>
-              {foreignForm === "purchase" ? (
-                <>
-                  <label className="field"><span>Quantidade total comprada</span><input type="number" min="1" step="1" value={totalQuantity} onChange={(event) => setTotalQuantity(event.target.value)} /></label>
-                  <div className="split-fields">
-                    <label className="field"><span>Armazenar na China</span><input type="number" min="0" step="1" value={chinaQuantity} onChange={(event) => setChinaQuantity(event.target.value)} /></label>
-                    <label className="field"><span>Enviar em trânsito</span><input type="number" min="0" step="1" value={transitQuantity} onChange={(event) => setTransitQuantity(event.target.value)} /></label>
-                  </div>
-                  {Number(transitQuantity) > 0 && <label className="field"><span>Previsão de chegada ao Porto</span><input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></label>}
-                </>
-              ) : (
-                <>
-                  <div className="selected-stock"><div><span>Disponível na China</span><strong>{foreignItem.china}</strong></div></div>
-                  <label className="field"><span>Quantidade a retirar</span><input type="number" min="1" max={foreignItem.china} step="1" value={movementQuantity} onChange={(event) => setMovementQuantity(event.target.value)} /></label>
-                  <label className="field"><span>Previsão de chegada ao Porto</span><input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></label>
-                </>
-              )}
-              {foreignError && <p className="form-error" role="alert">{foreignError}</p>}
-              <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setForeignForm(null)}>Cancelar</button><button className="primary-button" type="submit">Confirmar</button></div>
-            </form>
-          </section>
-        </div>
-      )}
+      {foreignForm && (() => {
+        const hasPurchaseTransit = foreignForm === "purchase" && purchaseLines.some((line) => {
+          const total = Number(line.totalQuantity);
+          const china = Number(line.chinaQuantity || 0);
+          return Number.isInteger(total) && total > 0 && Number.isInteger(china) && china >= 0 && total - china > 0;
+        });
+        const purchaseTotals = purchaseLines.reduce((acc, line) => {
+          const total = Number.isInteger(Number(line.totalQuantity)) && Number(line.totalQuantity) > 0 ? Number(line.totalQuantity) : 0;
+          const china = Number.isInteger(Number(line.chinaQuantity || 0)) && Number(line.chinaQuantity || 0) >= 0 ? Number(line.chinaQuantity || 0) : 0;
+          const transit = Math.max(total - china, 0);
+          const unitCents = parseUsdInput(line.unitValueUsd) ?? 0;
+          return {
+            total: acc.total + total,
+            china: acc.china + Math.min(china, total),
+            transit: acc.transit + transit,
+            usdCents: acc.usdCents + unitCents * total,
+          };
+        }, { total: 0, china: 0, transit: 0, usdCents: 0 });
+
+        return (
+          <div className="dialog-backdrop" role="presentation">
+            <section className="commitment-dialog foreign-dialog" role="dialog" aria-modal="true" aria-labelledby="foreign-form-title">
+              <div className="dialog-heading">
+                <div><p className="context">Comércio Exterior</p><h2 id="foreign-form-title">{foreignForm === "purchase" ? "Novo pedido de compra" : "Retirar do estoque China"}</h2></div>
+                <button className="close-button" type="button" onClick={() => setForeignForm(null)} aria-label="Fechar">×</button>
+              </div>
+              <datalist id="foreign-product-codes">
+                {items.map((item) => <option key={item.code} value={item.code}>{item.code} — {item.description} ({item.finish})</option>)}
+              </datalist>
+              <form onSubmit={submitForeignForm}>
+                <label className="field">
+                  <span>Embarque (nº do pedido / contêiner)</span>
+                  <input
+                    type="text"
+                    placeholder="Ex.: EMB-2026-001"
+                    value={foreignShipmentIdentifier}
+                    onChange={(event) => setForeignShipmentIdentifier(event.target.value)}
+                  />
+                </label>
+
+                {foreignForm === "purchase" ? (
+                  <>
+                    <div className="foreign-lines">
+                      <div className="foreign-lines-head">
+                        <strong>Produtos do embarque</strong>
+                        <button
+                          className="secondary-button compact"
+                          type="button"
+                          onClick={() => setPurchaseLines((current) => [...current, { code: "", unitValueUsd: "", totalQuantity: "", chinaQuantity: "" }])}
+                        >+ Adicionar produto</button>
+                      </div>
+                      {purchaseLines.map((line, index) => {
+                        const matched = findStockItem(line.code);
+                        const total = Number(line.totalQuantity);
+                        const china = Number(line.chinaQuantity || 0);
+                        const validQty = Number.isInteger(total) && total > 0 && Number.isInteger(china) && china >= 0 && china <= total;
+                        const transit = validQty ? total - china : null;
+                        const unitCents = parseUsdInput(line.unitValueUsd);
+                        const lineTotalCents = unitCents && Number.isInteger(total) && total > 0 ? unitCents * total : null;
+                        return (
+                          <div className="foreign-line-card" key={index}>
+                            <div className="foreign-purchase-grid">
+                              <label className="field">
+                                <span>Código</span>
+                                <input
+                                  list="foreign-product-codes"
+                                  placeholder="Ex.: CD0100"
+                                  value={line.code}
+                                  onChange={(event) => setPurchaseLines((current) => current.map((entry, idx) => idx === index ? { ...entry, code: event.target.value } : entry))}
+                                />
+                              </label>
+                              <div className="field">
+                                <span>Descrição</span>
+                                <div className={matched ? "foreign-readonly" : "foreign-readonly muted"} title={matched ? `${matched.description} (${matched.finish})` : "Selecione um código válido"}>
+                                  {matched ? `${matched.description} (${matched.finish})` : "Código não encontrado"}
+                                </div>
+                              </div>
+                              <label className="field">
+                                <span>Valor (US$)</span>
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  placeholder="0.00"
+                                  value={line.unitValueUsd}
+                                  onChange={(event) => setPurchaseLines((current) => current.map((entry, idx) => idx === index ? { ...entry, unitValueUsd: event.target.value } : entry))}
+                                />
+                              </label>
+                              <label className="field">
+                                <span>Quantidade</span>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  step="1"
+                                  value={line.totalQuantity}
+                                  onChange={(event) => setPurchaseLines((current) => current.map((entry, idx) => idx === index ? { ...entry, totalQuantity: event.target.value } : entry))}
+                                />
+                              </label>
+                              <label className="field">
+                                <span>Armazém China</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="1"
+                                  value={line.chinaQuantity}
+                                  onChange={(event) => setPurchaseLines((current) => current.map((entry, idx) => idx === index ? { ...entry, chinaQuantity: event.target.value } : entry))}
+                                />
+                              </label>
+                              <div className="field">
+                                <span>Em trânsito</span>
+                                <div className={transit === null ? "foreign-readonly muted" : "foreign-readonly"}>{transit ?? "—"}</div>
+                              </div>
+                              <div className="field">
+                                <span>Total (US$)</span>
+                                <div className={lineTotalCents === null ? "foreign-readonly muted" : "foreign-readonly"}>{formatUsdCents(lineTotalCents)}</div>
+                              </div>
+                              <button
+                                className="remove-line"
+                                type="button"
+                                disabled={purchaseLines.length <= 1}
+                                onClick={() => setPurchaseLines((current) => current.filter((_, idx) => idx !== index))}
+                                aria-label="Remover produto"
+                              >×</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="foreign-summary">
+                      <span>Total comprado: <strong>{purchaseTotals.total}</strong> un.</span>
+                      <span>Armazém China: <strong>{purchaseTotals.china}</strong> un.</span>
+                      <span>Em trânsito: <strong>{purchaseTotals.transit}</strong> un.</span>
+                      <span>Total do pedido: <strong>{formatUsdCents(purchaseTotals.usdCents)}</strong></span>
+                    </div>
+                    {hasPurchaseTransit && (
+                      <label className="field"><span>Previsão de chegada ao Porto</span><input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></label>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div className="foreign-lines">
+                      <div className="foreign-lines-head">
+                        <strong>Produtos para retirada da China</strong>
+                        <button
+                          className="secondary-button compact"
+                          type="button"
+                          onClick={() => setDispatchLines((current) => [...current, { code: "", unitValueUsd: "", quantity: "" }])}
+                        >+ Adicionar produto</button>
+                      </div>
+                      {dispatchLines.map((line, index) => {
+                        const matched = findStockItem(line.code);
+                        return (
+                          <div className="foreign-line-card" key={index}>
+                            <div className="foreign-dispatch-grid">
+                              <label className="field">
+                                <span>Código</span>
+                                <input
+                                  list="foreign-product-codes"
+                                  placeholder="Ex.: CD0100"
+                                  value={line.code}
+                                  onChange={(event) => setDispatchLines((current) => current.map((entry, idx) => idx === index ? { ...entry, code: event.target.value } : entry))}
+                                />
+                              </label>
+                              <label className="field">
+                                <span>Valor (US$)</span>
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  placeholder="0.00"
+                                  value={line.unitValueUsd}
+                                  onChange={(event) => setDispatchLines((current) => current.map((entry, idx) => idx === index ? { ...entry, unitValueUsd: event.target.value } : entry))}
+                                />
+                              </label>
+                              <div className="field">
+                                <span>Descrição</span>
+                                <div className={matched ? "foreign-readonly" : "foreign-readonly muted"} title={matched ? `${matched.description} (${matched.finish})` : "Selecione um código válido"}>
+                                  {matched ? `${matched.description} (${matched.finish})` : "Código não encontrado"}
+                                </div>
+                              </div>
+                              <div className="field">
+                                <span>Qtd. disponível</span>
+                                <div className={matched ? "foreign-readonly" : "foreign-readonly muted"}>{matched ? matched.china : "—"}</div>
+                              </div>
+                              <label className="field">
+                                <span>Qtd. a retirar</span>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max={matched ? matched.china : undefined}
+                                  step="1"
+                                  value={line.quantity}
+                                  onChange={(event) => setDispatchLines((current) => current.map((entry, idx) => idx === index ? { ...entry, quantity: event.target.value } : entry))}
+                                />
+                              </label>
+                              <button
+                                className="remove-line"
+                                type="button"
+                                disabled={dispatchLines.length <= 1}
+                                onClick={() => setDispatchLines((current) => current.filter((_, idx) => idx !== index))}
+                                aria-label="Remover produto"
+                              >×</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <label className="field"><span>Data de chegada ao Porto</span><input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></label>
+                  </>
+                )}
+                {foreignError && <p className="form-error" role="alert">{foreignError}</p>}
+                <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setForeignForm(null)}>Cancelar</button><button className="primary-button" type="submit">Confirmar</button></div>
+              </form>
+            </section>
+          </div>
+        );
+      })()}
 
       {arrivalAction && (
         <div className="dialog-backdrop" role="presentation">
           <section className="commitment-dialog compact-dialog" role="dialog" aria-modal="true" aria-labelledby="arrival-title">
             <div className="dialog-heading">
-              <div><p className="context">{arrivalAction.shipment.code}</p><h2 id="arrival-title">{arrivalAction.type === "arrived" ? "Confirmar chegada" : "Atualizar previsão"}</h2></div>
+              <div><p className="context">{arrivalAction.shipment.shipment_identifier}</p><h2 id="arrival-title">{arrivalAction.type === "arrived" ? "Confirmar chegada" : "Atualizar previsão"}</h2></div>
               <button className="close-button" type="button" onClick={() => setArrivalAction(null)} aria-label="Fechar">×</button>
             </div>
             <form onSubmit={submitArrival}>
-              <p className="dialog-copy">{arrivalAction.shipment.quantity} unidades · {arrivalAction.shipment.stage === "transit" ? "destino Porto" : "destino Estoque GH"}</p>
+              <p className="dialog-copy">
+                {arrivalAction.shipment.items.reduce((sum, item) => sum + item.quantity, 0)} unidades em {arrivalAction.shipment.items.length} {arrivalAction.shipment.items.length === 1 ? "item" : "itens"} · {arrivalAction.shipment.stage === "transit" ? "destino Porto" : "destino Estoque GH"}
+              </p>
               {(arrivalAction.type === "delayed" || arrivalAction.shipment.stage === "transit") && (
                 <label className="field"><span>{arrivalAction.type === "delayed" ? "Nova data prevista" : "Previsão de chegada ao Estoque GH"}</span><input type="date" value={arrivalDate} onChange={(event) => setArrivalDate(event.target.value)} /></label>
               )}

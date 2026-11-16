@@ -15,18 +15,27 @@ export const inventory = sqliteTable("inventory", {
 
 export const purchaseOrders = sqliteTable("purchase_orders", {
   id: integer("id").primaryKey({ autoIncrement: true }),
+  shipmentIdentifier: text("shipment_identifier").notNull().unique(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const purchaseOrderItems = sqliteTable("purchase_order_items", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  purchaseOrderId: integer("purchase_order_id").notNull(),
   code: text("code").notNull(),
+  unitValueUsdCents: integer("unit_value_usd_cents").notNull(),
   totalQuantity: integer("total_quantity").notNull(),
   chinaQuantity: integer("china_quantity").notNull(),
   transitQuantity: integer("transit_quantity").notNull(),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const shipments = sqliteTable("shipments", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   purchaseOrderId: integer("purchase_order_id"),
+  shipmentIdentifier: text("shipment_identifier"),
   code: text("code").notNull(),
   quantity: integer("quantity").notNull(),
+  unitValueUsdCents: integer("unit_value_usd_cents"),
   source: text("source").notNull(),
   stage: text("stage").notNull(),
   dueDate: text("due_date").notNull(),
