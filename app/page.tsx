@@ -257,7 +257,11 @@ export default function Home() {
   const allocatedForItem = allocations
     .filter((allocation) => allocation.code === allocationCode)
     .reduce((total, allocation) => total + allocation.quantity, 0);
-  const availableToAllocate = Math.max(allocationItem.gh - allocatedForItem, 0);
+  const pendingForItem = allocationTasks
+    .filter((task) => task.code === allocationCode)
+    .reduce((total, task) => total + Math.max(task.quantity - task.allocated_quantity, 0), 0);
+  const availableToAllocate = Math.max(allocationItem.gh - allocatedForItem, pendingForItem, 0);
+  const effectiveAllocationGh = Math.max(allocationItem.gh, allocatedForItem + availableToAllocate);
   const sortedAllocations = useMemo(
     () => [...allocations].sort((a, b) => {
       const codeResult = a.code.localeCompare(b.code, "pt-BR");
@@ -303,12 +307,22 @@ export default function Home() {
     }
   }
 
-  async function refreshAllocations() {
-    const response = await fetch("/api/allocations");
-    const data = await response.json() as { allocations?: Allocation[]; tasks?: AllocationTask[]; incomingShipments?: IncomingShipment[] };
+  function applyAllocationsData(data: { inventory?: Array<Omit<StockItem, "ghCommitted">>; allocations?: Allocation[]; tasks?: AllocationTask[]; incomingShipments?: IncomingShipment[] }) {
     setAllocations(data.allocations ?? []);
     setAllocationTasks(data.tasks ?? []);
     setIncomingShipments(data.incomingShipments ?? []);
+    if (data.inventory) {
+      setItems((current) => data.inventory!.map((item) => ({
+        ...item,
+        ghCommitted: current.find((candidate) => candidate.code === item.code)?.ghCommitted ?? 0,
+      })));
+    }
+  }
+
+  async function refreshAllocations() {
+    const response = await fetch("/api/allocations");
+    const data = await response.json() as { inventory?: Array<Omit<StockItem, "ghCommitted">>; allocations?: Allocation[]; tasks?: AllocationTask[]; incomingShipments?: IncomingShipment[] };
+    applyAllocationsData(data);
   }
 
   function applyLogisticsData(data: { inventory?: Array<Omit<StockItem, "ghCommitted">>; events?: LogisticsEvent[]; openOrders?: LogisticsOrder[]; logisticsOrders?: LogisticsOrder[]; returnAllocations?: ReturnAllocation[] }) {
@@ -587,11 +601,9 @@ export default function Home() {
           taskId: selectedAllocationTask,
         }),
       });
-      const data = await response.json() as { allocations?: Allocation[]; tasks?: AllocationTask[]; incomingShipments?: IncomingShipment[]; error?: string };
+      const data = await response.json() as { inventory?: Array<Omit<StockItem, "ghCommitted">>; allocations?: Allocation[]; tasks?: AllocationTask[]; incomingShipments?: IncomingShipment[]; error?: string };
       if (!response.ok) throw new Error(data.error ?? "Não foi possível alocar os produtos.");
-      setAllocations(data.allocations ?? []);
-      setAllocationTasks(data.tasks ?? []);
-      setIncomingShipments(data.incomingShipments ?? []);
+      applyAllocationsData(data);
       setAllocationFormOpen(false);
       setSelectedAllocationTask(null);
       setAllocationError("");
@@ -616,11 +628,9 @@ export default function Home() {
           quantity: transferQuantity,
         }),
       });
-      const data = await response.json() as { allocations?: Allocation[]; tasks?: AllocationTask[]; incomingShipments?: IncomingShipment[]; error?: string };
+      const data = await response.json() as { inventory?: Array<Omit<StockItem, "ghCommitted">>; allocations?: Allocation[]; tasks?: AllocationTask[]; incomingShipments?: IncomingShipment[]; error?: string };
       if (!response.ok) throw new Error(data.error ?? "Não foi possível transferir a posição.");
-      setAllocations(data.allocations ?? []);
-      setAllocationTasks(data.tasks ?? []);
-      setIncomingShipments(data.incomingShipments ?? []);
+      applyAllocationsData(data);
       setEditingAllocation(null);
       setTransferError("");
     } catch (error) {
@@ -991,7 +1001,16 @@ export default function Home() {
                 <p className="subtitle">Distribua o Estoque GH por rua, coluna e nível.</p>
               </div>
               {allocationView === "gh" && <button className="primary-button" type="button" onClick={() => {
-                setAllocationFormOpen(true); setSelectedAllocationTask(null); setAllocationError(""); setStreet(""); setAllocationColumn(""); setLevel(""); setAllocationQuantity("");
+                const firstTask = allocationTasks[0] ?? null;
+                const defaultCode = firstTask?.code ?? allocationCode;
+                const totalPendingForDefault = allocationTasks
+                  .filter((task) => task.code === defaultCode)
+                  .reduce((sum, task) => sum + Math.max(task.quantity - task.allocated_quantity, 0), 0);
+                setAllocationCode(defaultCode);
+                setSelectedAllocationTask(firstTask?.id ?? null);
+                setAllocationQuantity(totalPendingForDefault > 0 ? String(totalPendingForDefault) : "");
+                setAllocationError(""); setStreet(""); setAllocationColumn(""); setLevel("");
+                setAllocationFormOpen(true);
               }}>Editar produtos</button>}
             </div>
 
@@ -1561,17 +1580,27 @@ export default function Home() {
               {activeAllocationTask && (
                 <div className="task-banner">
                   <div><span>Embarque</span><strong>{activeAllocationTask.shipment_identifier}</strong></div>
-                  <div><span>Produto</span><strong>{activeAllocationTask.code}</strong></div>
-                  <div><span>Falta alocar</span><strong>{activeAllocationTask.quantity - activeAllocationTask.allocated_quantity} un.</strong></div>
+                  <div><span>Neste embarque ({activeAllocationTask.code})</span><strong>{activeAllocationTask.quantity - activeAllocationTask.allocated_quantity} un.</strong></div>
+                  <div><span>Total a alocar ({allocationCode})</span><strong>{availableToAllocate} un.</strong></div>
                 </div>
               )}
               <label className="field"><span>Código do produto</span>
-                <select value={allocationCode} disabled={Boolean(activeAllocationTask)} onChange={(event) => { setAllocationCode(event.target.value); setAllocationError(""); }}>
+                <select value={allocationCode} onChange={(event) => {
+                  const nextCode = event.target.value;
+                  setAllocationCode(nextCode);
+                  const matchingTask = allocationTasks.find((task) => task.code === nextCode);
+                  setSelectedAllocationTask(matchingTask?.id ?? null);
+                  const nextPending = allocationTasks
+                    .filter((task) => task.code === nextCode)
+                    .reduce((sum, task) => sum + Math.max(task.quantity - task.allocated_quantity, 0), 0);
+                  if (nextPending > 0) setAllocationQuantity(String(nextPending));
+                  setAllocationError("");
+                }}>
                   {items.map((item) => <option key={item.code} value={item.code}>{item.code} — {item.description} ({item.finish})</option>)}
                 </select>
               </label>
               <div className="selected-stock">
-                <div><span>Estoque GH</span><strong>{allocationItem.gh}</strong></div>
+                <div><span>Estoque GH</span><strong>{effectiveAllocationGh}</strong></div>
                 <div><span>Já alocado</span><strong>{allocatedForItem}</strong></div>
                 <div><span>Disponível</span><strong>{availableToAllocate}</strong></div>
               </div>

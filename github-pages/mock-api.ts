@@ -14,7 +14,7 @@ type DemoState = {
   counters: Record<string, number>;
 };
 
-const STORAGE_KEY = "ilya-estoque-github-pages-demo-v2";
+const STORAGE_KEY = "ilya-estoque-github-pages-demo-v3";
 const originalFetch = window.fetch.bind(window);
 
 function initialState(): DemoState {
@@ -213,7 +213,28 @@ function foreignData() {
   };
 }
 
+function resolveTaskShipmentIdentifier(task: DemoRecord) {
+  const shipment = state.shipments.find((entry) => entry.id === task.shipment_id);
+  const order = shipment?.purchase_order_id
+    ? state.purchaseOrders.find((entry) => entry.id === shipment.purchase_order_id)
+    : null;
+  return order?.shipment_identifier
+    ?? shipment?.shipment_identifier
+    ?? (task.shipment_id ? `Embarque #${task.shipment_id}` : `Entrada avulsa #${task.id}`);
+}
+
 function allocationsData() {
+  for (const stock of state.inventory) {
+    const allocated = state.allocations
+      .filter((entry) => entry.code === stock.code)
+      .reduce((sum, entry) => sum + Number(entry.quantity), 0);
+    const pending = state.allocationTasks
+      .filter((task) => task.code === stock.code && task.status === "pending")
+      .reduce((sum, task) => sum + Math.max(Number(task.quantity) - Number(task.allocated_quantity), 0), 0);
+    if (stock.gh < allocated + pending) {
+      stock.gh = allocated + pending;
+    }
+  }
   return {
     inventory: state.inventory,
     allocations: state.allocations.map(enrichedAllocation).reverse(),
@@ -221,13 +242,10 @@ function allocationsData() {
       .filter((task) => task.status === "pending")
       .map((task) => {
         const shipment = state.shipments.find((entry) => entry.id === task.shipment_id);
-        const order = shipment?.purchase_order_id
-          ? state.purchaseOrders.find((entry) => entry.id === shipment.purchase_order_id)
-          : null;
         return {
           ...task,
           ...pickProduct(task.code),
-          shipment_identifier: order?.shipment_identifier ?? shipment?.shipment_identifier ?? "Entrada avulsa",
+          shipment_identifier: resolveTaskShipmentIdentifier(task),
           due_date: shipment?.due_date ?? null,
           source: shipment?.source ?? null,
         };
@@ -473,24 +491,52 @@ async function allocationsApi(method: string, input: RequestInfo | URL, init?: R
   const item = inventoryItem(String(payload.code));
   const quantity = Number(payload.quantity);
   const allocated = state.allocations.filter((entry) => entry.code === payload.code).reduce((sum, entry) => sum + entry.quantity, 0);
-  if (!item || quantity > item.gh - allocated) return json({ error: "Quantidade maior que a disponível para alocação." }, 400);
-  const task = state.allocationTasks.find((entry) => entry.id === Number(payload.taskId));
-  const shipment = task?.shipment_id ? state.shipments.find((entry) => entry.id === task.shipment_id) : null;
-  const order = shipment?.purchase_order_id ? state.purchaseOrders.find((entry) => entry.id === shipment.purchase_order_id) : null;
-  const shipmentIdentifier = order?.shipment_identifier ?? shipment?.shipment_identifier ?? (String(payload.shipmentIdentifier ?? "").trim() || null);
-  state.allocations.push({
-    id: next("allocation"),
-    code: payload.code,
-    shipment_identifier: shipmentIdentifier,
-    street: payload.street,
-    column: payload.column,
-    level: payload.level,
-    quantity,
-    created_at: now(),
-  });
-  if (task) {
-    task.allocated_quantity += quantity;
+  const requestedTaskId = Number(payload.taskId);
+  const pendingTasks = state.allocationTasks
+    .filter((entry) => entry.code === payload.code && entry.status === "pending")
+    .sort((a, b) => (a.id === requestedTaskId ? -1 : b.id === requestedTaskId ? 1 : a.id - b.id));
+  const totalPending = pendingTasks.reduce((sum, entry) => sum + Math.max(entry.quantity - entry.allocated_quantity, 0), 0);
+  const available = item ? Math.max(item.gh - allocated, totalPending, 0) : 0;
+  if (!item || !Number.isInteger(quantity) || quantity <= 0 || quantity > available) {
+    return json({ error: `Quantidade maior que a disponível para alocação. Restam ${available} unidades.` }, 400);
+  }
+
+  const fallbackIdentifier = String(payload.shipmentIdentifier ?? "").trim() || null;
+  let remainingToAssign = quantity;
+  for (const task of pendingTasks) {
+    if (remainingToAssign <= 0) break;
+    const taskRemaining = Math.max(task.quantity - task.allocated_quantity, 0);
+    if (taskRemaining <= 0) continue;
+    const take = Math.min(remainingToAssign, taskRemaining);
+    task.allocated_quantity += take;
     if (task.allocated_quantity >= task.quantity) task.status = "completed";
+    state.allocations.push({
+      id: next("allocation"),
+      code: payload.code,
+      shipment_identifier: resolveTaskShipmentIdentifier(task),
+      street: payload.street,
+      column: payload.column,
+      level: payload.level,
+      quantity: take,
+      created_at: now(),
+    });
+    remainingToAssign -= take;
+  }
+
+  if (remainingToAssign > 0) {
+    state.allocations.push({
+      id: next("allocation"),
+      code: payload.code,
+      shipment_identifier: fallbackIdentifier,
+      street: payload.street,
+      column: payload.column,
+      level: payload.level,
+      quantity: remainingToAssign,
+      created_at: now(),
+    });
+  }
+  if (item.gh < allocated + quantity) {
+    item.gh = allocated + quantity;
   }
   save();
   return json(allocationsData());

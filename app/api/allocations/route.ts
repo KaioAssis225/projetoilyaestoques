@@ -102,7 +102,7 @@ async function readData() {
       JOIN inventory i ON i.code = a.code
       ORDER BY a.id DESC`).all(),
     env.DB.prepare(`SELECT t.*, i.description, i.finish,
-      COALESCE(po.shipment_identifier, s.shipment_identifier, 'Entrada avulsa') AS shipment_identifier,
+      COALESCE(po.shipment_identifier, s.shipment_identifier, CASE WHEN t.shipment_id IS NOT NULL THEN 'Embarque #' || t.shipment_id ELSE 'Entrada avulsa #' || t.id END) AS shipment_identifier,
       s.due_date,
       s.source
       FROM allocation_tasks t
@@ -206,41 +206,63 @@ export async function POST(request: Request) {
     return Response.json({ error: "Código de produto inválido." }, { status: 400 });
   }
 
-  const allocated = await env.DB.prepare("SELECT COALESCE(SUM(quantity), 0) AS total FROM allocations WHERE code = ?")
-    .bind(code).first<{ total: number }>();
-  const available = Math.max(item.gh - Number(allocated?.total ?? 0), 0);
+  const [allocated, pendingRows] = await Promise.all([
+    env.DB.prepare("SELECT COALESCE(SUM(quantity), 0) AS total FROM allocations WHERE code = ?")
+      .bind(code).first<{ total: number }>(),
+    env.DB.prepare(`SELECT t.id, t.quantity, t.allocated_quantity,
+      COALESCE(po.shipment_identifier, s.shipment_identifier, CASE WHEN t.shipment_id IS NOT NULL THEN 'Embarque #' || t.shipment_id ELSE NULL END) AS shipment_identifier
+      FROM allocation_tasks t
+      LEFT JOIN shipments s ON s.id = t.shipment_id
+      LEFT JOIN purchase_orders po ON po.id = s.purchase_order_id
+      WHERE t.code = ? AND t.status = 'pending'
+      ORDER BY CASE WHEN t.id = ? THEN 0 ELSE 1 END, t.id`)
+      .bind(code, Number.isInteger(taskId) && taskId > 0 ? taskId : -1)
+      .all<{ id: number; quantity: number; allocated_quantity: number; shipment_identifier: string | null }>(),
+  ]);
+
+  const allocatedTotal = Number(allocated?.total ?? 0);
+  const pendingTasks = pendingRows.results;
+  const totalPending = pendingTasks.reduce((sum, task) => sum + Math.max(task.quantity - task.allocated_quantity, 0), 0);
+  const available = Math.max(item.gh - allocatedTotal, totalPending, 0);
   if (quantity > available) {
     return Response.json({ error: `Quantidade maior que a disponível para alocação. Restam ${available} unidades.` }, { status: 400 });
   }
 
-  let shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim() || null;
-  if (Number.isInteger(taskId) && taskId > 0) {
-    const task = await env.DB.prepare(`SELECT t.quantity, t.allocated_quantity,
-      COALESCE(po.shipment_identifier, s.shipment_identifier) AS shipment_identifier
-      FROM allocation_tasks t
-      LEFT JOIN shipments s ON s.id = t.shipment_id
-      LEFT JOIN purchase_orders po ON po.id = s.purchase_order_id
-      WHERE t.id = ? AND t.code = ? AND t.status = 'pending'`)
-      .bind(taskId, code).first<{ quantity: number; allocated_quantity: number; shipment_identifier: string | null }>();
-    const taskRemaining = task ? task.quantity - task.allocated_quantity : 0;
-    if (!task || quantity > taskRemaining) {
-      return Response.json({ error: `Quantidade maior que a pendência de alocação. Restam ${taskRemaining} unidades desta chegada.` }, { status: 400 });
-    }
-    if (task.shipment_identifier) shipmentIdentifier = task.shipment_identifier;
-  }
+  const fallbackIdentifier = String(payload.shipmentIdentifier ?? "").trim() || null;
+  const statements: D1PreparedStatement[] = [];
+  let remainingToAssign = quantity;
 
-  await env.DB.prepare(`INSERT INTO allocations (code, shipment_identifier, street, "column", level, quantity) VALUES (?, ?, ?, ?, ?, ?)`)
-    .bind(code, shipmentIdentifier, street, column, level, quantity).run();
-  if (Number.isInteger(taskId) && taskId > 0) {
-    const task = await env.DB.prepare("SELECT quantity, allocated_quantity FROM allocation_tasks WHERE id = ? AND code = ? AND status = 'pending'")
-      .bind(taskId, code).first<{ quantity: number; allocated_quantity: number }>();
-    if (task) {
-      const nextAllocated = Math.min(task.allocated_quantity + quantity, task.quantity);
-      await env.DB.prepare(`UPDATE allocation_tasks
+  for (const task of pendingTasks) {
+    if (remainingToAssign <= 0) break;
+    const taskRemaining = Math.max(task.quantity - task.allocated_quantity, 0);
+    if (taskRemaining <= 0) continue;
+    const take = Math.min(remainingToAssign, taskRemaining);
+    const nextAllocated = task.allocated_quantity + take;
+    statements.push(
+      env.DB.prepare(`INSERT INTO allocations (code, shipment_identifier, street, "column", level, quantity) VALUES (?, ?, ?, ?, ?, ?)`)
+        .bind(code, task.shipment_identifier ?? fallbackIdentifier, street, column, level, take),
+      env.DB.prepare(`UPDATE allocation_tasks
         SET allocated_quantity = ?, status = CASE WHEN ? >= quantity THEN 'completed' ELSE 'pending' END
         WHERE id = ?`)
-        .bind(nextAllocated, nextAllocated, taskId).run();
-    }
+        .bind(nextAllocated, nextAllocated, task.id),
+    );
+    remainingToAssign -= take;
   }
+
+  if (remainingToAssign > 0) {
+    statements.push(
+      env.DB.prepare(`INSERT INTO allocations (code, shipment_identifier, street, "column", level, quantity) VALUES (?, ?, ?, ?, ?, ?)`)
+        .bind(code, fallbackIdentifier, street, column, level, remainingToAssign),
+    );
+  }
+
+  if (item.gh < allocatedTotal + quantity) {
+    statements.push(
+      env.DB.prepare("UPDATE inventory SET gh = ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?")
+        .bind(allocatedTotal + quantity, code),
+    );
+  }
+
+  await env.DB.batch(statements);
   return readData();
 }
