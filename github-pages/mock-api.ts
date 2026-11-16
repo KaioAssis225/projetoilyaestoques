@@ -224,17 +224,6 @@ function resolveTaskShipmentIdentifier(task: DemoRecord) {
 }
 
 function allocationsData() {
-  for (const stock of state.inventory) {
-    const allocated = state.allocations
-      .filter((entry) => entry.code === stock.code)
-      .reduce((sum, entry) => sum + Number(entry.quantity), 0);
-    const pending = state.allocationTasks
-      .filter((task) => task.code === stock.code && task.status === "pending")
-      .reduce((sum, task) => sum + Math.max(Number(task.quantity) - Number(task.allocated_quantity), 0), 0);
-    if (stock.gh < allocated + pending) {
-      stock.gh = allocated + pending;
-    }
-  }
   return {
     inventory: state.inventory,
     allocations: state.allocations.map(enrichedAllocation).reverse(),
@@ -492,46 +481,42 @@ async function allocationsApi(method: string, input: RequestInfo | URL, init?: R
   const quantity = Number(payload.quantity);
   const allocated = state.allocations.filter((entry) => entry.code === payload.code).reduce((sum, entry) => sum + entry.quantity, 0);
   const requestedTaskId = Number(payload.taskId);
-  const pendingTasks = state.allocationTasks
-    .filter((entry) => entry.code === payload.code && entry.status === "pending")
-    .sort((a, b) => (a.id === requestedTaskId ? -1 : b.id === requestedTaskId ? 1 : a.id - b.id));
-  const totalPending = pendingTasks.reduce((sum, entry) => sum + Math.max(entry.quantity - entry.allocated_quantity, 0), 0);
-  const available = item ? Math.max(item.gh - allocated, totalPending, 0) : 0;
-  if (!item || !Number.isInteger(quantity) || quantity <= 0 || quantity > available) {
-    return json({ error: `Quantidade maior que a disponível para alocação. Restam ${available} unidades.` }, 400);
+  if (!item || !Number.isInteger(quantity) || quantity <= 0) {
+    return json({ error: "Informe produto e quantidade válida para alocação." }, 400);
   }
 
-  const fallbackIdentifier = String(payload.shipmentIdentifier ?? "").trim() || null;
-  let remainingToAssign = quantity;
-  for (const task of pendingTasks) {
-    if (remainingToAssign <= 0) break;
+  if (Number.isInteger(requestedTaskId) && requestedTaskId > 0) {
+    const task = state.allocationTasks.find((entry) => entry.id === requestedTaskId && entry.status === "pending");
+    if (!task) return json({ error: "Embarque pendente não encontrado." }, 404);
     const taskRemaining = Math.max(task.quantity - task.allocated_quantity, 0);
-    if (taskRemaining <= 0) continue;
-    const take = Math.min(remainingToAssign, taskRemaining);
-    task.allocated_quantity += take;
+    if (quantity > taskRemaining) {
+      return json({ error: `Quantidade maior que o saldo deste embarque (${resolveTaskShipmentIdentifier(task)}). Restam ${taskRemaining} unidades.` }, 400);
+    }
+    task.allocated_quantity += quantity;
     if (task.allocated_quantity >= task.quantity) task.status = "completed";
     state.allocations.push({
       id: next("allocation"),
-      code: payload.code,
+      code: task.code,
       shipment_identifier: resolveTaskShipmentIdentifier(task),
       street: payload.street,
       column: payload.column,
       level: payload.level,
-      quantity: take,
+      quantity,
       created_at: now(),
     });
-    remainingToAssign -= take;
-  }
-
-  if (remainingToAssign > 0) {
+  } else {
+    const available = Math.max(item.gh - allocated, 0);
+    if (quantity > available) {
+      return json({ error: `Quantidade maior que a disponível para alocação. Restam ${available} unidades.` }, 400);
+    }
     state.allocations.push({
       id: next("allocation"),
       code: payload.code,
-      shipment_identifier: fallbackIdentifier,
+      shipment_identifier: String(payload.shipmentIdentifier ?? "").trim() || null,
       street: payload.street,
       column: payload.column,
       level: payload.level,
-      quantity: remainingToAssign,
+      quantity,
       created_at: now(),
     });
   }

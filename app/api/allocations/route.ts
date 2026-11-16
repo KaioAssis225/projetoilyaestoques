@@ -206,53 +206,47 @@ export async function POST(request: Request) {
     return Response.json({ error: "Código de produto inválido." }, { status: 400 });
   }
 
-  const [allocated, pendingRows] = await Promise.all([
-    env.DB.prepare("SELECT COALESCE(SUM(quantity), 0) AS total FROM allocations WHERE code = ?")
-      .bind(code).first<{ total: number }>(),
-    env.DB.prepare(`SELECT t.id, t.quantity, t.allocated_quantity,
-      COALESCE(po.shipment_identifier, s.shipment_identifier, CASE WHEN t.shipment_id IS NOT NULL THEN 'Embarque #' || t.shipment_id ELSE NULL END) AS shipment_identifier
+  const allocated = await env.DB.prepare("SELECT COALESCE(SUM(quantity), 0) AS total FROM allocations WHERE code = ?")
+    .bind(code).first<{ total: number }>();
+  const allocatedTotal = Number(allocated?.total ?? 0);
+  const statements: D1PreparedStatement[] = [];
+
+  if (Number.isInteger(taskId) && taskId > 0) {
+    const task = await env.DB.prepare(`SELECT t.id, t.code, t.quantity, t.allocated_quantity,
+      COALESCE(po.shipment_identifier, s.shipment_identifier, CASE WHEN t.shipment_id IS NOT NULL THEN 'Embarque #' || t.shipment_id ELSE 'Entrada avulsa #' || t.id END) AS shipment_identifier
       FROM allocation_tasks t
       LEFT JOIN shipments s ON s.id = t.shipment_id
       LEFT JOIN purchase_orders po ON po.id = s.purchase_order_id
-      WHERE t.code = ? AND t.status = 'pending'
-      ORDER BY CASE WHEN t.id = ? THEN 0 ELSE 1 END, t.id`)
-      .bind(code, Number.isInteger(taskId) && taskId > 0 ? taskId : -1)
-      .all<{ id: number; quantity: number; allocated_quantity: number; shipment_identifier: string | null }>(),
-  ]);
+      WHERE t.id = ? AND t.status = 'pending'`)
+      .bind(taskId)
+      .first<{ id: number; code: string; quantity: number; allocated_quantity: number; shipment_identifier: string }>();
 
-  const allocatedTotal = Number(allocated?.total ?? 0);
-  const pendingTasks = pendingRows.results;
-  const totalPending = pendingTasks.reduce((sum, task) => sum + Math.max(task.quantity - task.allocated_quantity, 0), 0);
-  const available = Math.max(item.gh - allocatedTotal, totalPending, 0);
-  if (quantity > available) {
-    return Response.json({ error: `Quantidade maior que a disponível para alocação. Restam ${available} unidades.` }, { status: 400 });
-  }
-
-  const fallbackIdentifier = String(payload.shipmentIdentifier ?? "").trim() || null;
-  const statements: D1PreparedStatement[] = [];
-  let remainingToAssign = quantity;
-
-  for (const task of pendingTasks) {
-    if (remainingToAssign <= 0) break;
+    if (!task) {
+      return Response.json({ error: "Embarque pendente não encontrado." }, { status: 404 });
+    }
     const taskRemaining = Math.max(task.quantity - task.allocated_quantity, 0);
-    if (taskRemaining <= 0) continue;
-    const take = Math.min(remainingToAssign, taskRemaining);
-    const nextAllocated = task.allocated_quantity + take;
+    if (quantity > taskRemaining) {
+      return Response.json({ error: `Quantidade maior que o saldo deste embarque (${task.shipment_identifier}). Restam ${taskRemaining} unidades.` }, { status: 400 });
+    }
+
+    const nextAllocated = task.allocated_quantity + quantity;
     statements.push(
       env.DB.prepare(`INSERT INTO allocations (code, shipment_identifier, street, "column", level, quantity) VALUES (?, ?, ?, ?, ?, ?)`)
-        .bind(code, task.shipment_identifier ?? fallbackIdentifier, street, column, level, take),
+        .bind(task.code, task.shipment_identifier, street, column, level, quantity),
       env.DB.prepare(`UPDATE allocation_tasks
         SET allocated_quantity = ?, status = CASE WHEN ? >= quantity THEN 'completed' ELSE 'pending' END
         WHERE id = ?`)
         .bind(nextAllocated, nextAllocated, task.id),
     );
-    remainingToAssign -= take;
-  }
-
-  if (remainingToAssign > 0) {
+  } else {
+    const available = Math.max(item.gh - allocatedTotal, 0);
+    if (quantity > available) {
+      return Response.json({ error: `Quantidade maior que a disponível para alocação. Restam ${available} unidades.` }, { status: 400 });
+    }
+    const fallbackIdentifier = String(payload.shipmentIdentifier ?? "").trim() || null;
     statements.push(
       env.DB.prepare(`INSERT INTO allocations (code, shipment_identifier, street, "column", level, quantity) VALUES (?, ?, ?, ?, ?, ?)`)
-        .bind(code, fallbackIdentifier, street, column, level, remainingToAssign),
+        .bind(code, fallbackIdentifier, street, column, level, quantity),
     );
   }
 

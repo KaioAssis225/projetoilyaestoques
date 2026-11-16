@@ -254,14 +254,18 @@ export default function Home() {
   }
   const logisticsItem = items.find((item) => item.code === logisticsCode) ?? items[0];
   const allocationItem = items.find((item) => item.code === allocationCode) ?? items[0];
-  const allocatedForItem = allocations
-    .filter((allocation) => allocation.code === allocationCode)
-    .reduce((total, allocation) => total + allocation.quantity, 0);
-  const pendingForItem = allocationTasks
-    .filter((task) => task.code === allocationCode)
-    .reduce((total, task) => total + Math.max(task.quantity - task.allocated_quantity, 0), 0);
-  const availableToAllocate = Math.max(allocationItem.gh - allocatedForItem, pendingForItem, 0);
-  const effectiveAllocationGh = Math.max(allocationItem.gh, allocatedForItem + availableToAllocate);
+  const activeAllocationTask = allocationTasks.find((task) => task.id === selectedAllocationTask) ?? null;
+  const allocatedForItem = activeAllocationTask
+    ? activeAllocationTask.allocated_quantity
+    : allocations
+        .filter((allocation) => allocation.code === allocationCode)
+        .reduce((total, allocation) => total + allocation.quantity, 0);
+  const availableToAllocate = activeAllocationTask
+    ? Math.max(activeAllocationTask.quantity - activeAllocationTask.allocated_quantity, 0)
+    : Math.max(allocationItem.gh - allocatedForItem, 0);
+  const effectiveAllocationGh = activeAllocationTask
+    ? activeAllocationTask.quantity
+    : allocationItem.gh;
   const sortedAllocations = useMemo(
     () => [...allocations].sort((a, b) => {
       const codeResult = a.code.localeCompare(b.code, "pt-BR");
@@ -272,7 +276,6 @@ export default function Home() {
     }),
     [allocations, allocationSort],
   );
-  const activeAllocationTask = allocationTasks.find((task) => task.id === selectedAllocationTask) ?? null;
   const groupedAllocationTasks = useMemo(() => {
     const groups = new Map<string, { id: string; shipment_identifier: string; tasks: AllocationTask[]; total: number; allocated: number }>();
     for (const task of allocationTasks) {
@@ -1002,13 +1005,15 @@ export default function Home() {
               </div>
               {allocationView === "gh" && <button className="primary-button" type="button" onClick={() => {
                 const firstTask = allocationTasks[0] ?? null;
-                const defaultCode = firstTask?.code ?? allocationCode;
-                const totalPendingForDefault = allocationTasks
-                  .filter((task) => task.code === defaultCode)
-                  .reduce((sum, task) => sum + Math.max(task.quantity - task.allocated_quantity, 0), 0);
-                setAllocationCode(defaultCode);
-                setSelectedAllocationTask(firstTask?.id ?? null);
-                setAllocationQuantity(totalPendingForDefault > 0 ? String(totalPendingForDefault) : "");
+                if (firstTask) {
+                  const taskRemaining = Math.max(firstTask.quantity - firstTask.allocated_quantity, 0);
+                  setAllocationCode(firstTask.code);
+                  setSelectedAllocationTask(firstTask.id);
+                  setAllocationQuantity(String(taskRemaining));
+                } else {
+                  setSelectedAllocationTask(null);
+                  setAllocationQuantity("");
+                }
                 setAllocationError(""); setStreet(""); setAllocationColumn(""); setLevel("");
                 setAllocationFormOpen(true);
               }}>Editar produtos</button>}
@@ -1577,30 +1582,47 @@ export default function Home() {
               <button className="close-button" type="button" onClick={() => setAllocationFormOpen(false)} aria-label="Fechar">×</button>
             </div>
             <form onSubmit={submitAllocation}>
-              {activeAllocationTask && (
+              {allocationTasks.length > 0 && (
+                <label className="field"><span>Embarque / item para alocar</span>
+                  <select
+                    value={selectedAllocationTask ?? ""}
+                    onChange={(event) => {
+                      const nextTaskId = Number(event.target.value);
+                      const nextTask = allocationTasks.find((task) => task.id === nextTaskId) ?? null;
+                      setSelectedAllocationTask(nextTask?.id ?? null);
+                      if (nextTask) {
+                        setAllocationCode(nextTask.code);
+                        setAllocationQuantity(String(Math.max(nextTask.quantity - nextTask.allocated_quantity, 0)));
+                      }
+                      setAllocationError("");
+                    }}
+                  >
+                    {allocationTasks.map((task) => {
+                      const remaining = Math.max(task.quantity - task.allocated_quantity, 0);
+                      return (
+                        <option key={task.id} value={task.id}>
+                          Embarque {task.shipment_identifier} — {task.code} ({ task.description }) · {remaining} un. disponíveis
+                        </option>
+                      );
+                    })}
+                  </select>
+                </label>
+              )}
+              {activeAllocationTask ? (
                 <div className="task-banner">
                   <div><span>Embarque</span><strong>{activeAllocationTask.shipment_identifier}</strong></div>
-                  <div><span>Neste embarque ({activeAllocationTask.code})</span><strong>{activeAllocationTask.quantity - activeAllocationTask.allocated_quantity} un.</strong></div>
-                  <div><span>Total a alocar ({allocationCode})</span><strong>{availableToAllocate} un.</strong></div>
+                  <div><span>Produto</span><strong>{activeAllocationTask.code} — {activeAllocationTask.description}</strong></div>
+                  <div><span>Falta alocar neste embarque</span><strong>{availableToAllocate} un.</strong></div>
                 </div>
+              ) : (
+                <label className="field"><span>Código do produto</span>
+                  <select value={allocationCode} onChange={(event) => { setAllocationCode(event.target.value); setAllocationError(""); }}>
+                    {items.map((item) => <option key={item.code} value={item.code}>{item.code} — {item.description} ({item.finish})</option>)}
+                  </select>
+                </label>
               )}
-              <label className="field"><span>Código do produto</span>
-                <select value={allocationCode} onChange={(event) => {
-                  const nextCode = event.target.value;
-                  setAllocationCode(nextCode);
-                  const matchingTask = allocationTasks.find((task) => task.code === nextCode);
-                  setSelectedAllocationTask(matchingTask?.id ?? null);
-                  const nextPending = allocationTasks
-                    .filter((task) => task.code === nextCode)
-                    .reduce((sum, task) => sum + Math.max(task.quantity - task.allocated_quantity, 0), 0);
-                  if (nextPending > 0) setAllocationQuantity(String(nextPending));
-                  setAllocationError("");
-                }}>
-                  {items.map((item) => <option key={item.code} value={item.code}>{item.code} — {item.description} ({item.finish})</option>)}
-                </select>
-              </label>
               <div className="selected-stock">
-                <div><span>Estoque GH</span><strong>{effectiveAllocationGh}</strong></div>
+                <div><span>{activeAllocationTask ? "Total no embarque" : "Estoque GH"}</span><strong>{effectiveAllocationGh}</strong></div>
                 <div><span>Já alocado</span><strong>{allocatedForItem}</strong></div>
                 <div><span>Disponível</span><strong>{availableToAllocate}</strong></div>
               </div>
