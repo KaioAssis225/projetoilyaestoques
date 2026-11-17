@@ -163,6 +163,71 @@ const columns: { key: SortKey; label: string; numeric?: boolean }[] = [
   { key: "returns", label: "Estoque Devolução", numeric: true },
 ];
 
+function NavIcon({ name }: { name: "stock" | "dashboard" | "commercial" | "foreign" | "logistics" | "allocation" | "search" }) {
+  switch (name) {
+    case "stock":
+      return (
+        <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+          <path d="m3.3 7 8.7 5 8.7-5" />
+          <path d="M12 22V12" />
+        </svg>
+      );
+    case "dashboard":
+      return (
+        <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <rect x="3" y="3" width="7" height="9" rx="1.5" />
+          <rect x="14" y="3" width="7" height="5" rx="1.5" />
+          <rect x="14" y="12" width="7" height="9" rx="1.5" />
+          <rect x="3" y="16" width="7" height="5" rx="1.5" />
+        </svg>
+      );
+    case "commercial":
+      return (
+        <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <path d="M14 2v6h6" />
+          <path d="M9 15h6" />
+          <path d="M9 11h6" />
+        </svg>
+      );
+    case "foreign":
+      return (
+        <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M3.6 9h16.8" />
+          <path d="M3.6 15h16.8" />
+          <path d="M11.5 3a17 17 0 0 0 0 18" />
+          <path d="M12.5 3a17 17 0 0 1 0 18" />
+        </svg>
+      );
+    case "logistics":
+      return (
+        <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M10 17h4V5H2v12h3" />
+          <path d="M20 17h2v-3.34a4 4 0 0 0-1.17-2.83L19 9h-5v8h1" />
+          <circle cx="7.5" cy="17.5" r="2.5" />
+          <circle cx="17.5" cy="17.5" r="2.5" />
+        </svg>
+      );
+    case "allocation":
+      return (
+        <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M3 21V8l9-5 9 5v13" />
+          <path d="M7 21v-8h10v8" />
+          <path d="M7 17h10" />
+        </svg>
+      );
+    case "search":
+      return (
+        <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" />
+          <path d="m20 20-3.5-3.5" />
+        </svg>
+      );
+  }
+}
+
 function GhBalance({ total, committed }: { total: number; committed: number }) {
   return (
     <div className="stock-balance">
@@ -360,6 +425,45 @@ export default function Home() {
     });
     // Initial hydration is intentionally executed once for this single-page workspace.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const stockTotals = useMemo(() => {
+    const china = items.reduce((sum, item) => sum + item.china, 0);
+    const transit = items.reduce((sum, item) => sum + item.transit, 0);
+    const port = items.reduce((sum, item) => sum + item.port, 0);
+    const gh = items.reduce((sum, item) => sum + item.gh, 0);
+    const ghCommitted = items.reduce((sum, item) => sum + item.ghCommitted, 0);
+    const ghAvailable = items.reduce((sum, item) => sum + Math.max(item.gh - item.ghCommitted, 0), 0);
+    const returns = items.reduce((sum, item) => sum + item.returns, 0);
+    const grandTotal = Math.max(china + transit + port + gh + returns, 1);
+    return { china, transit, port, gh, ghCommitted, ghAvailable, returns, grandTotal };
+  }, [items]);
+
+  function switchSection(nextSection: "stock" | "dashboard" | "commercial" | "foreign" | "logistics" | "allocation") {
+    setActiveSection(nextSection);
+    setForeignError("");
+    setLogisticsError("");
+    setAllocationError("");
+    setFormError("");
+  }
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setCommitmentChoiceOpen(false);
+      setCommitmentToCancel(null);
+      setFormOpen(false);
+      setForeignForm(null);
+      setArrivalAction(null);
+      setLogisticsForm(null);
+      setInvoiceOrder(null);
+      setReturnOrder(null);
+      setAllocationFormOpen(false);
+      setSelectedAllocationTask(null);
+      setEditingAllocation(null);
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
   const visibleItems = useMemo(() => {
@@ -646,10 +750,16 @@ export default function Home() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <a className="brand" href="#conteudo" aria-label="Ilya Estoque — início">
-          <span className="brand-mark" aria-hidden="true">I</span>
-          <span>Ilya Estoque</span>
-        </a>
+        <div className="brand-group">
+          <a className="brand" href="#conteudo" aria-label="Ilya Estoque — início">
+            <span className="brand-mark" aria-hidden="true">IE</span>
+            <span>Ilya Estoque</span>
+          </a>
+          <span className="system-status">
+            <span className="status-dot" aria-hidden="true" />
+            Torre de Controle · Operacional
+          </span>
+        </div>
         <div className="user-area">
           <span className="role">Comercial</span>
           <span className="avatar" aria-hidden="true">LU</span>
@@ -658,30 +768,35 @@ export default function Home() {
       </header>
 
       <aside className="sidebar" aria-label="Navegação principal">
-        <p className="sidebar-label">Áreas</p>
-        <button className={activeSection === "stock" ? "nav-item active" : "nav-item"} type="button" onClick={() => setActiveSection("stock")}>
-          <span aria-hidden="true">▦</span>
-          Estoque
+        <p className="sidebar-label">Operação</p>
+        <button className={activeSection === "stock" ? "nav-item active" : "nav-item"} type="button" onClick={() => switchSection("stock")}>
+          <NavIcon name="stock" />
+          <span>Estoque</span>
+          <span className="nav-badge">{items.length}</span>
         </button>
-        <button className={activeSection === "dashboard" ? "nav-item active" : "nav-item"} type="button" onClick={() => setActiveSection("dashboard")}>
-          <span aria-hidden="true">▥</span>
-          Dashboard
+        <button className={activeSection === "dashboard" ? "nav-item active" : "nav-item"} type="button" onClick={() => switchSection("dashboard")}>
+          <NavIcon name="dashboard" />
+          <span>Dashboard</span>
         </button>
-        <button className={activeSection === "commercial" ? "nav-item active" : "nav-item"} type="button" onClick={() => setActiveSection("commercial")}>
-          <span aria-hidden="true">◎</span>
-          Comercial
+        <button className={activeSection === "commercial" ? "nav-item active" : "nav-item"} type="button" onClick={() => switchSection("commercial")}>
+          <NavIcon name="commercial" />
+          <span>Comercial</span>
+          {commitments.length > 0 && <span className="nav-badge">{commitments.length}</span>}
         </button>
-        <button className={activeSection === "foreign" ? "nav-item active" : "nav-item"} type="button" onClick={() => setActiveSection("foreign")}>
-          <span aria-hidden="true">⇄</span>
-          Comércio Exterior
+        <button className={activeSection === "foreign" ? "nav-item active" : "nav-item"} type="button" onClick={() => switchSection("foreign")}>
+          <NavIcon name="foreign" />
+          <span>Comércio Exterior</span>
+          {foreignData.shipments.length > 0 && <span className="nav-badge">{foreignData.shipments.length}</span>}
         </button>
-        <button className={activeSection === "logistics" ? "nav-item active" : "nav-item"} type="button" onClick={() => setActiveSection("logistics")}>
-          <span aria-hidden="true">⇥</span>
-          Logística
+        <button className={activeSection === "logistics" ? "nav-item active" : "nav-item"} type="button" onClick={() => switchSection("logistics")}>
+          <NavIcon name="logistics" />
+          <span>Logística</span>
+          {openLogisticsOrders.length > 0 && <span className="nav-badge">{openLogisticsOrders.length}</span>}
         </button>
-        <button className={activeSection === "allocation" ? "nav-item active" : "nav-item"} type="button" onClick={() => setActiveSection("allocation")}>
-          <span aria-hidden="true">⌗</span>
-          Alocação
+        <button className={activeSection === "allocation" ? "nav-item active" : "nav-item"} type="button" onClick={() => switchSection("allocation")}>
+          <NavIcon name="allocation" />
+          <span>Alocação</span>
+          {allocationTasks.length > 0 && <span className="nav-badge">{allocationTasks.length}</span>}
         </button>
       </aside>
 
@@ -692,12 +807,51 @@ export default function Home() {
           <>
         <div className="page-heading">
           <div>
-            <p className="context">Visão geral</p>
             <h1>Estoque</h1>
-            <p className="subtitle">Acompanhe a posição atual de cada item.</p>
+            <p className="subtitle">Visão consolidada da cadeia de suprimentos: da origem na China até a disponibilidade física no Estoque GH.</p>
           </div>
-          <span className="updated">Atualizado agora</span>
+          <span className="updated"><span className="status-dot" aria-hidden="true" />Sincronizado em tempo real</span>
         </div>
+
+        <section className="supply-chain-overview" aria-label="Resumo da cadeia de estoque">
+          <div className="stage-kpi-grid">
+            <div className="stage-kpi-card">
+              <div className="stage-kpi-header"><span className="stage-kpi-label">Estoque China</span><span className="stage-indicator china" aria-hidden="true" /></div>
+              <strong className="stage-kpi-value">{stockTotals.china}</strong>
+              <span className="stage-kpi-meta">Armazém na origem</span>
+            </div>
+            <div className="stage-kpi-card">
+              <div className="stage-kpi-header"><span className="stage-kpi-label">Em trânsito</span><span className="stage-indicator transit" aria-hidden="true" /></div>
+              <strong className="stage-kpi-value">{stockTotals.transit}</strong>
+              <span className="stage-kpi-meta">China → Porto</span>
+            </div>
+            <div className="stage-kpi-card">
+              <div className="stage-kpi-header"><span className="stage-kpi-label">Porto</span><span className="stage-indicator port" aria-hidden="true" /></div>
+              <strong className="stage-kpi-value">{stockTotals.port}</strong>
+              <span className="stage-kpi-meta">Desembaraço / liberação</span>
+            </div>
+            <div className="stage-kpi-card">
+              <div className="stage-kpi-header"><span className="stage-kpi-label">Estoque GH</span><span className="stage-indicator gh" aria-hidden="true" /></div>
+              <strong className="stage-kpi-value">{stockTotals.gh}</strong>
+              <span className="stage-kpi-meta">{stockTotals.ghAvailable} disp. · {stockTotals.ghCommitted} emp.</span>
+            </div>
+            <div className="stage-kpi-card">
+              <div className="stage-kpi-header"><span className="stage-kpi-label">Devolução</span><span className="stage-indicator returns" aria-hidden="true" /></div>
+              <strong className="stage-kpi-value">{stockTotals.returns}</strong>
+              <span className="stage-kpi-meta">Retorno de empréstimo</span>
+            </div>
+          </div>
+          <div className="stage-distribution-footer">
+            <div className="stage-distribution-bar" aria-hidden="true">
+              <span className="stage-segment china" style={{ width: `${(stockTotals.china / stockTotals.grandTotal) * 100}%` }} />
+              <span className="stage-segment transit" style={{ width: `${(stockTotals.transit / stockTotals.grandTotal) * 100}%` }} />
+              <span className="stage-segment port" style={{ width: `${(stockTotals.port / stockTotals.grandTotal) * 100}%` }} />
+              <span className="stage-segment gh" style={{ width: `${(stockTotals.gh / stockTotals.grandTotal) * 100}%` }} />
+              <span className="stage-segment returns" style={{ width: `${(stockTotals.returns / stockTotals.grandTotal) * 100}%` }} />
+            </div>
+            <span className="stage-distribution-total">Total na cadeia: {stockTotals.china + stockTotals.transit + stockTotals.port + stockTotals.gh + stockTotals.returns} un.</span>
+          </div>
+        </section>
 
         <section className="stock-panel" aria-labelledby="stock-table-title">
           <div className="toolbar">
@@ -708,7 +862,7 @@ export default function Home() {
             <div className="controls">
               <label className="search">
                 <span className="sr-only">Pesquisar itens</span>
-                <span aria-hidden="true">⌕</span>
+                <NavIcon name="search" />
                 <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar código ou descrição" />
                 {query && <button type="button" onClick={() => setQuery("")} aria-label="Limpar pesquisa">×</button>}
               </label>
@@ -734,11 +888,11 @@ export default function Home() {
                   <tr key={item.code}>
                     <td><button className="item-code" type="button">{item.code}</button></td>
                     <td className="description">{item.description}</td>
-                    <td className="numeric">{item.china}</td>
-                    <td className="numeric">{item.transit}</td>
-                    <td className="numeric">{item.port}</td>
+                    <td className="numeric"><span className={item.china > 0 ? "stage-pill china" : "stage-pill zero"}>{item.china}</span></td>
+                    <td className="numeric"><span className={item.transit > 0 ? "stage-pill transit" : "stage-pill zero"}>{item.transit}</span></td>
+                    <td className="numeric"><span className={item.port > 0 ? "stage-pill port" : "stage-pill zero"}>{item.port}</span></td>
                     <td className="numeric"><GhBalance total={item.gh} committed={item.ghCommitted} /></td>
-                    <td className="numeric">{item.returns}</td>
+                    <td className="numeric"><span className={item.returns > 0 ? "stage-pill returns" : "stage-pill zero"}>{item.returns}</span></td>
                   </tr>
                 ))}
               </tbody>
@@ -751,15 +905,14 @@ export default function Home() {
               </div>
             )}
           </div>
-          <footer className="table-note"><span aria-hidden="true">●</span> Os saldos são atualizados automaticamente pelas movimentações.</footer>
+          <footer className="table-note"><span className="status-dot" aria-hidden="true" /> Os saldos são atualizados automaticamente pelas movimentações.</footer>
         </section>
           </>
         ) : activeSection === "commercial" ? (
           <>
             <div className="page-heading commercial-heading">
               <div>
-                <p className="context">Área Comercial</p>
-                <h1>Empenhos</h1>
+                <h1>Comercial · Empenhos</h1>
                 <p className="subtitle">Reserve itens disponíveis no Estoque GH para demandas confirmadas.</p>
               </div>
               <button className="primary-button" type="button" onClick={() => setCommitmentChoiceOpen(true)}>+ Novo empenho</button>
@@ -811,7 +964,6 @@ export default function Home() {
           <>
             <div className="page-heading commercial-heading">
               <div>
-                <p className="context">Operação internacional</p>
                 <h1>Comércio Exterior</h1>
                 <p className="subtitle">Acompanhe compras e transferências da China até o Estoque GH.</p>
               </div>
@@ -867,8 +1019,14 @@ export default function Home() {
                           </div>
                         </div>
                         <div>
-                          <span>Etapa</span>
-                          <strong>{shipment.stage === "transit" ? "China → Porto" : "Porto → Estoque GH"}</strong>
+                          <span>Etapa · {shipment.stage === "transit" ? "China → Porto" : "Porto → Estoque GH"}</span>
+                          <div className="pipeline-stepper" aria-hidden="true">
+                            <span className="pipeline-step done">CHINA</span>
+                            <span className="pipeline-arrow">→</span>
+                            <span className={shipment.stage === "transit" ? "pipeline-step active-transit" : "pipeline-step done"}>PORTO</span>
+                            <span className="pipeline-arrow">→</span>
+                            <span className={shipment.stage === "port" ? "pipeline-step active-port" : "pipeline-step"}>GH</span>
+                          </div>
                         </div>
                         <div>
                           <span>Previsão</span>
@@ -933,7 +1091,6 @@ export default function Home() {
           <>
             <div className="page-heading commercial-heading">
               <div>
-                <p className="context">Operação de estoque</p>
                 <h1>Logística</h1>
                 <p className="subtitle">Registre saídas e ajustes do Estoque GH com rastreabilidade.</p>
               </div>
@@ -1000,7 +1157,6 @@ export default function Home() {
           <>
             <div className="page-heading commercial-heading">
               <div>
-                <p className="context">Organização física</p>
                 <h1>Alocação</h1>
                 <p className="subtitle">Distribua o Estoque GH por rua, coluna e nível.</p>
               </div>
@@ -1026,7 +1182,7 @@ export default function Home() {
                           <div className="allocation-progress-wrap">
                             <span>{group.allocated}/{group.total} un. alocadas</span>
                             <span className="allocation-progress-track" aria-hidden="true">
-                              <span className="allocation-progress-fill" style={{ width: `${percent}%` }} />
+                              <span className="allocation-progress-fill" style={{ transform: `scaleX(${percent / 100})` }} />
                             </span>
                           </div>
                         </div>
@@ -1104,9 +1260,9 @@ export default function Home() {
                         <tr key={allocation.id}>
                           <td><span className="item-code">{allocation.code}</span></td>
                           <td className="description">{allocation.description} · {allocation.finish}</td>
-                          <td>{allocation.street}</td>
-                          <td>{allocation.column}</td>
-                          <td>{allocation.level}</td>
+                          <td className="coord-cell">{allocation.street}</td>
+                          <td className="coord-cell">{allocation.column}</td>
+                          <td className="coord-cell">{allocation.level}</td>
                           <td className="numeric strong-number">{allocation.quantity}</td>
                           <td className="allocation-action-cell">
                             <button
@@ -1138,10 +1294,10 @@ export default function Home() {
                         <tr key={position.id}>
                           <td><span className="item-code">{position.code}</span></td>
                           <td className="description">{position.description} · {position.finish}</td>
-                          <td>{position.order_number}</td>
-                          <td>{position.street}</td>
-                          <td>{position.column}</td>
-                          <td>{position.level}</td>
+                          <td className="coord-cell">{position.order_number}</td>
+                          <td className="coord-cell">{position.street}</td>
+                          <td className="coord-cell">{position.column}</td>
+                          <td className="coord-cell">{position.level}</td>
                           <td className="numeric strong-number">{position.quantity}</td>
                           <td className="allocation-action-cell">
                             <button
@@ -1172,7 +1328,7 @@ export default function Home() {
         <div className="dialog-backdrop" role="presentation">
           <section className="commitment-dialog choice-dialog" role="dialog" aria-modal="true" aria-labelledby="commitment-choice-title">
             <div className="dialog-heading">
-              <div><p className="context">Comercial</p><h2 id="commitment-choice-title">Novo empenho</h2></div>
+              <div><h2 id="commitment-choice-title">Novo empenho</h2></div>
               <button className="close-button" type="button" onClick={() => setCommitmentChoiceOpen(false)} aria-label="Fechar">×</button>
             </div>
             <p className="choice-intro">Escolha como deseja comprometer o saldo disponível do Estoque GH.</p>
@@ -1194,7 +1350,7 @@ export default function Home() {
         <div className="dialog-backdrop" role="presentation">
           <section className="commitment-dialog compact-dialog" role="dialog" aria-modal="true" aria-labelledby="cancel-document-title">
             <div className="dialog-heading">
-              <div><p className="context">Comercial</p><h2 id="cancel-document-title">Cancelar documento?</h2></div>
+              <div><h2 id="cancel-document-title">Cancelar documento?</h2></div>
               <button className="close-button" type="button" onClick={() => setCommitmentToCancel(null)} aria-label="Fechar">×</button>
             </div>
             <p className="dialog-copy">{commitmentToCancel.type === "reservation" ? commitmentToCancel.reservation_code : `Pedido nº ${commitmentToCancel.order_number}`} · {commitmentToCancel.items.length} {commitmentToCancel.items.length === 1 ? "item" : "itens"}</p>
@@ -1215,7 +1371,6 @@ export default function Home() {
           <section className="commitment-dialog" role="dialog" aria-modal="true" aria-labelledby="new-commitment-title">
             <div className="dialog-heading">
               <div>
-                <p className="context">Comercial</p>
                 <h2 id="new-commitment-title">{commitmentType === "order" ? "Empenho de pedido" : "Reserva de itens"}</h2>
               </div>
               <button className="close-button" type="button" onClick={() => setFormOpen(false)} aria-label="Fechar">×</button>
@@ -1293,7 +1448,7 @@ export default function Home() {
           <div className="dialog-backdrop" role="presentation">
             <section className="commitment-dialog foreign-dialog" role="dialog" aria-modal="true" aria-labelledby="foreign-form-title">
               <div className="dialog-heading">
-                <div><p className="context">Comércio Exterior</p><h2 id="foreign-form-title">{foreignForm === "purchase" ? "Novo pedido de compra" : "Retirar do estoque China"}</h2></div>
+                <div><h2 id="foreign-form-title">{foreignForm === "purchase" ? "Novo pedido de compra" : "Retirar do estoque China"}</h2></div>
                 <button className="close-button" type="button" onClick={() => setForeignForm(null)} aria-label="Fechar">×</button>
               </div>
               <datalist id="foreign-product-codes">
@@ -1513,7 +1668,7 @@ export default function Home() {
         <div className="dialog-backdrop" role="presentation">
           <section className="commitment-dialog compact-dialog" role="dialog" aria-modal="true" aria-labelledby="arrival-title">
             <div className="dialog-heading">
-              <div><p className="context">{arrivalAction.shipment.shipment_identifier}</p><h2 id="arrival-title">{arrivalAction.type === "arrived" ? "Confirmar chegada" : "Atualizar previsão"}</h2></div>
+              <div><h2 id="arrival-title">{arrivalAction.type === "arrived" ? "Confirmar chegada" : "Atualizar previsão"} · {arrivalAction.shipment.shipment_identifier}</h2></div>
               <button className="close-button" type="button" onClick={() => setArrivalAction(null)} aria-label="Fechar">×</button>
             </div>
             <form onSubmit={submitArrival}>
@@ -1535,7 +1690,6 @@ export default function Home() {
           <section className="commitment-dialog logistics-dialog" role="dialog" aria-modal="true" aria-labelledby="logistics-form-title">
             <div className="dialog-heading">
               <div>
-                <p className="context">Logística</p>
                 <h2 id="logistics-form-title">{logisticsForm === "exit" ? "Separação de item por pedido" : "Ajuste de estoque"}</h2>
               </div>
               <button className="close-button" type="button" onClick={() => setLogisticsForm(null)} aria-label="Fechar">×</button>
@@ -1582,15 +1736,15 @@ export default function Home() {
         </div>
       )}
 
-      {invoiceOrder && <div className="dialog-backdrop" role="presentation"><section className="commitment-dialog compact-dialog" role="dialog" aria-modal="true" aria-labelledby="invoice-title"><div className="dialog-heading"><div><p className="context">Pedido {invoiceOrder.order_number}</p><h2 id="invoice-title">Baixa por NF</h2></div><button className="close-button" type="button" onClick={() => setInvoiceOrder(null)} aria-label="Fechar">×</button></div><form onSubmit={submitInvoice}><label className="field"><span>Número da nota fiscal</span><input autoFocus value={invoiceNumber} onChange={(event) => { setInvoiceNumber(event.target.value); setLogisticsError(""); }} /></label>{invoiceOrder.loan_items ? <p className="field-hint">Após a baixa, este pedido ficará aguardando a devolução de todos os itens.</p> : null}{logisticsError && <p className="form-error" role="alert">{logisticsError}</p>}<div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setInvoiceOrder(null)}>Cancelar</button><button className="primary-button" type="submit">Confirmar saída</button></div></form></section></div>}
+      {invoiceOrder && <div className="dialog-backdrop" role="presentation"><section className="commitment-dialog compact-dialog" role="dialog" aria-modal="true" aria-labelledby="invoice-title"><div className="dialog-heading"><div><h2 id="invoice-title">Baixa por NF · Pedido {invoiceOrder.order_number}</h2></div><button className="close-button" type="button" onClick={() => setInvoiceOrder(null)} aria-label="Fechar">×</button></div><form onSubmit={submitInvoice}><label className="field"><span>Número da nota fiscal</span><input autoFocus value={invoiceNumber} onChange={(event) => { setInvoiceNumber(event.target.value); setLogisticsError(""); }} /></label>{invoiceOrder.loan_items ? <p className="field-hint">Após a baixa, este pedido ficará aguardando a devolução de todos os itens.</p> : null}{logisticsError && <p className="form-error" role="alert">{logisticsError}</p>}<div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setInvoiceOrder(null)}>Cancelar</button><button className="primary-button" type="submit">Confirmar saída</button></div></form></section></div>}
 
-      {returnOrder && <div className="dialog-backdrop" role="presentation"><section className="commitment-dialog" role="dialog" aria-modal="true" aria-labelledby="return-title"><div className="dialog-heading"><div><p className="context">Pedido {returnOrder.order_number}</p><h2 id="return-title">Registrar devolução integral</h2></div><button className="close-button" type="button" onClick={() => setReturnOrder(null)} aria-label="Fechar">×</button></div><form onSubmit={submitReturn}><p className="dialog-copy">Todos os itens abaixo retornarão juntos ao Estoque Devolução.</p>{returnOrder.items.map((item) => { const position = returnPositions[item.id] ?? { street: "", column: "", level: "" }; return <fieldset className="return-item" key={item.id}><legend><strong>{item.code}</strong> · {item.quantity} unidades</legend><div className="allocation-fields"><label className="field"><span>Rua</span><input value={position.street} onChange={(event) => setReturnPositions((current) => ({ ...current, [item.id]: { ...position, street: event.target.value } }))} /></label><label className="field"><span>Coluna</span><input value={position.column} onChange={(event) => setReturnPositions((current) => ({ ...current, [item.id]: { ...position, column: event.target.value } }))} /></label><label className="field"><span>Nível</span><input value={position.level} onChange={(event) => setReturnPositions((current) => ({ ...current, [item.id]: { ...position, level: event.target.value } }))} /></label></div></fieldset>; })}{logisticsError && <p className="form-error" role="alert">{logisticsError}</p>}<div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setReturnOrder(null)}>Cancelar</button><button className="primary-button" type="submit">Confirmar devolução</button></div></form></section></div>}
+      {returnOrder && <div className="dialog-backdrop" role="presentation"><section className="commitment-dialog" role="dialog" aria-modal="true" aria-labelledby="return-title"><div className="dialog-heading"><div><h2 id="return-title">Registrar devolução integral · Pedido {returnOrder.order_number}</h2></div><button className="close-button" type="button" onClick={() => setReturnOrder(null)} aria-label="Fechar">×</button></div><form onSubmit={submitReturn}><p className="dialog-copy">Todos os itens abaixo retornarão juntos ao Estoque Devolução.</p>{returnOrder.items.map((item) => { const position = returnPositions[item.id] ?? { street: "", column: "", level: "" }; return <fieldset className="return-item" key={item.id}><legend><strong>{item.code}</strong> · {item.quantity} unidades</legend><div className="allocation-fields"><label className="field"><span>Rua</span><input value={position.street} onChange={(event) => setReturnPositions((current) => ({ ...current, [item.id]: { ...position, street: event.target.value } }))} /></label><label className="field"><span>Coluna</span><input value={position.column} onChange={(event) => setReturnPositions((current) => ({ ...current, [item.id]: { ...position, column: event.target.value } }))} /></label><label className="field"><span>Nível</span><input value={position.level} onChange={(event) => setReturnPositions((current) => ({ ...current, [item.id]: { ...position, level: event.target.value } }))} /></label></div></fieldset>; })}{logisticsError && <p className="form-error" role="alert">{logisticsError}</p>}<div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setReturnOrder(null)}>Cancelar</button><button className="primary-button" type="submit">Confirmar devolução</button></div></form></section></div>}
 
       {allocationFormOpen && (
         <div className="dialog-backdrop" role="presentation">
           <section className="commitment-dialog" role="dialog" aria-modal="true" aria-labelledby="allocation-form-title">
             <div className="dialog-heading">
-              <div><p className="context">Alocação</p><h2 id="allocation-form-title">{activeAllocationTask ? "Alocar produtos" : "Editar produtos"}</h2></div>
+              <div><h2 id="allocation-form-title">{activeAllocationTask ? "Alocar produtos" : "Editar produtos"}</h2></div>
               <button className="close-button" type="button" onClick={() => setAllocationFormOpen(false)} aria-label="Fechar">×</button>
             </div>
             <form onSubmit={submitAllocation}>
@@ -1639,7 +1793,7 @@ export default function Home() {
           <div className="dialog-backdrop" role="presentation">
             <section className="commitment-dialog" role="dialog" aria-modal="true" aria-labelledby="transfer-form-title">
               <div className="dialog-heading">
-                <div><p className="context">{editingAllocation.code} — {editingAllocation.description}</p><h2 id="transfer-form-title">Transferir posição</h2></div>
+                <div><h2 id="transfer-form-title">Transferir posição · {editingAllocation.code} ({editingAllocation.description})</h2></div>
                 <button className="close-button" type="button" onClick={() => setEditingAllocation(null)} aria-label="Fechar">×</button>
               </div>
               <form onSubmit={submitTransfer}>
