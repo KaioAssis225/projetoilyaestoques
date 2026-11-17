@@ -1639,30 +1639,47 @@ export default function Home() {
         </div>
       )}
 
-      {editingAllocation && (
-        <div className="dialog-backdrop" role="presentation">
-          <section className="commitment-dialog" role="dialog" aria-modal="true" aria-labelledby="transfer-form-title">
-            <div className="dialog-heading">
-              <div><p className="context">{editingAllocation.code} — {editingAllocation.description}</p><h2 id="transfer-form-title">Transferir posição</h2></div>
-              <button className="close-button" type="button" onClick={() => setEditingAllocation(null)} aria-label="Fechar">×</button>
-            </div>
-            <form onSubmit={submitTransfer}>
-              <div className="selected-stock">
-                <div><span>Origem</span><strong>Rua {editingAllocation.street} · Col. {editingAllocation.column} · Nív. {editingAllocation.level}</strong></div>
-                <div><span>Saldo na posição</span><strong>{editingAllocation.quantity} un.</strong></div>
+      {editingAllocation && (() => {
+        const destinationMatch = allocations.find((entry) =>
+          entry.id !== editingAllocation.id
+          && entry.code === editingAllocation.code
+          && entry.street.trim().toLowerCase() === transferStreet.trim().toLowerCase()
+          && entry.column.trim().toLowerCase() === transferColumn.trim().toLowerCase()
+          && entry.level.trim().toLowerCase() === transferLevel.trim().toLowerCase(),
+        );
+        const parsedQty = Number.isInteger(Number(transferQuantity)) && Number(transferQuantity) > 0 ? Number(transferQuantity) : 0;
+        return (
+          <div className="dialog-backdrop" role="presentation">
+            <section className="commitment-dialog" role="dialog" aria-modal="true" aria-labelledby="transfer-form-title">
+              <div className="dialog-heading">
+                <div><p className="context">{editingAllocation.code} — {editingAllocation.description}</p><h2 id="transfer-form-title">Transferir posição</h2></div>
+                <button className="close-button" type="button" onClick={() => setEditingAllocation(null)} aria-label="Fechar">×</button>
               </div>
-              <div className="allocation-fields">
-                <label className="field"><span>Nova Rua</span><input value={transferStreet} onChange={(event) => { setTransferStreet(event.target.value); setTransferError(""); }} /></label>
-                <label className="field"><span>Nova Coluna</span><input value={transferColumn} onChange={(event) => { setTransferColumn(event.target.value); setTransferError(""); }} /></label>
-                <label className="field"><span>Novo Nível</span><input value={transferLevel} onChange={(event) => { setTransferLevel(event.target.value); setTransferError(""); }} /></label>
-              </div>
-              <label className="field"><span>Quantidade a transferir</span><input type="number" min="1" max={editingAllocation.quantity} step="1" value={transferQuantity} onChange={(event) => { setTransferQuantity(event.target.value); setTransferError(""); }} /></label>
-              {transferError && <p className="form-error" role="alert">{transferError}</p>}
-              <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setEditingAllocation(null)}>Cancelar</button><button className="primary-button" type="submit">Confirmar transferência</button></div>
-            </form>
-          </section>
-        </div>
-      )}
+              <form onSubmit={submitTransfer}>
+                <div className="selected-stock">
+                  <div><span>Origem</span><strong>Rua {editingAllocation.street} · Col. {editingAllocation.column} · Nív. {editingAllocation.level}</strong></div>
+                  <div><span>Saldo na posição</span><strong>{editingAllocation.quantity} un.</strong></div>
+                </div>
+                <div className="allocation-fields">
+                  <label className="field"><span>Nova Rua</span><input value={transferStreet} onChange={(event) => { setTransferStreet(event.target.value); setTransferError(""); }} /></label>
+                  <label className="field"><span>Nova Coluna</span><input value={transferColumn} onChange={(event) => { setTransferColumn(event.target.value); setTransferError(""); }} /></label>
+                  <label className="field"><span>Novo Nível</span><input value={transferLevel} onChange={(event) => { setTransferLevel(event.target.value); setTransferError(""); }} /></label>
+                </div>
+                <label className="field"><span>Quantidade a transferir</span><input type="number" min="1" max={editingAllocation.quantity} step="1" value={transferQuantity} onChange={(event) => { setTransferQuantity(event.target.value); setTransferError(""); }} /></label>
+                {destinationMatch && (
+                  <div className="task-banner">
+                    <div><span>Produto já na posição</span><strong>{destinationMatch.quantity} un.</strong></div>
+                    <div><span>Transferindo</span><strong>+{parsedQty} un.</strong></div>
+                    <div><span>Novo saldo somado</span><strong>{destinationMatch.quantity + parsedQty} un.</strong></div>
+                  </div>
+                )}
+                {transferError && <p className="form-error" role="alert">{transferError}</p>}
+                <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setEditingAllocation(null)}>Cancelar</button><button className="primary-button" type="submit">Confirmar transferência</button></div>
+              </form>
+            </section>
+          </div>
+        );
+      })()}
     </main>
   );
 }

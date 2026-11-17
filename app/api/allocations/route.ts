@@ -128,6 +128,18 @@ async function readData() {
   });
 }
 
+function mergeShipmentIdentifiers(existing: string | null | undefined, incoming: string | null | undefined) {
+  const first = String(existing ?? "").trim();
+  const second = String(incoming ?? "").trim();
+  if (!first) return second || null;
+  if (!second) return first;
+  const parts = first.split(",").map((part) => part.trim()).filter(Boolean);
+  if (!parts.some((part) => part.toLowerCase() === second.toLowerCase())) {
+    parts.push(second);
+  }
+  return parts.join(", ");
+}
+
 async function transferAllocation(payload: Record<string, unknown>) {
   const allocationId = Number(payload.allocationId);
   const street = String(payload.street ?? "").trim();
@@ -157,17 +169,35 @@ async function transferAllocation(payload: Record<string, unknown>) {
     return Response.json({ error: "A posição de destino deve ser diferente da posição atual." }, { status: 400 });
   }
 
-  const statements = quantity === source.quantity
-    ? [
-        env.DB.prepare(`UPDATE allocations SET street = ?, "column" = ?, level = ? WHERE id = ?`)
-          .bind(street, column, level, source.id),
-      ]
-    : [
-        env.DB.prepare("UPDATE allocations SET quantity = quantity - ? WHERE id = ?")
-          .bind(quantity, source.id),
-        env.DB.prepare(`INSERT INTO allocations (code, shipment_identifier, street, "column", level, quantity) VALUES (?, ?, ?, ?, ?, ?)`)
-          .bind(source.code, source.shipment_identifier, street, column, level, quantity),
-      ];
+  const destination = await env.DB.prepare(`SELECT id, shipment_identifier FROM allocations
+    WHERE code = ? AND street = ? COLLATE NOCASE AND "column" = ? COLLATE NOCASE AND level = ? COLLATE NOCASE AND id != ?
+    LIMIT 1`)
+    .bind(source.code, street, column, level, source.id)
+    .first<{ id: number; shipment_identifier: string | null }>();
+
+  const statements: D1PreparedStatement[] = [];
+  if (destination) {
+    const mergedIdentifier = mergeShipmentIdentifiers(destination.shipment_identifier, source.shipment_identifier);
+    statements.push(
+      quantity === source.quantity
+        ? env.DB.prepare("DELETE FROM allocations WHERE id = ?").bind(source.id)
+        : env.DB.prepare("UPDATE allocations SET quantity = quantity - ? WHERE id = ?").bind(quantity, source.id),
+      env.DB.prepare("UPDATE allocations SET quantity = quantity + ?, shipment_identifier = ? WHERE id = ?")
+        .bind(quantity, mergedIdentifier, destination.id),
+    );
+  } else if (quantity === source.quantity) {
+    statements.push(
+      env.DB.prepare(`UPDATE allocations SET street = ?, "column" = ?, level = ? WHERE id = ?`)
+        .bind(street, column, level, source.id),
+    );
+  } else {
+    statements.push(
+      env.DB.prepare("UPDATE allocations SET quantity = quantity - ? WHERE id = ?")
+        .bind(quantity, source.id),
+      env.DB.prepare(`INSERT INTO allocations (code, shipment_identifier, street, "column", level, quantity) VALUES (?, ?, ?, ?, ?, ?)`)
+        .bind(source.code, source.shipment_identifier, street, column, level, quantity),
+    );
+  }
 
   await env.DB.batch(statements);
   return null;
@@ -211,6 +241,9 @@ export async function POST(request: Request) {
   const allocatedTotal = Number(allocated?.total ?? 0);
   const statements: D1PreparedStatement[] = [];
 
+  let targetCode = code;
+  let shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim() || null;
+
   if (Number.isInteger(taskId) && taskId > 0) {
     const task = await env.DB.prepare(`SELECT t.id, t.code, t.quantity, t.allocated_quantity,
       COALESCE(po.shipment_identifier, s.shipment_identifier, CASE WHEN t.shipment_id IS NOT NULL THEN 'Embarque #' || t.shipment_id ELSE 'Entrada avulsa #' || t.id END) AS shipment_identifier
@@ -229,10 +262,10 @@ export async function POST(request: Request) {
       return Response.json({ error: `Quantidade maior que o saldo deste embarque (${task.shipment_identifier}). Restam ${taskRemaining} unidades.` }, { status: 400 });
     }
 
+    targetCode = task.code;
+    shipmentIdentifier = task.shipment_identifier;
     const nextAllocated = task.allocated_quantity + quantity;
     statements.push(
-      env.DB.prepare(`INSERT INTO allocations (code, shipment_identifier, street, "column", level, quantity) VALUES (?, ?, ?, ?, ?, ?)`)
-        .bind(task.code, task.shipment_identifier, street, column, level, quantity),
       env.DB.prepare(`UPDATE allocation_tasks
         SET allocated_quantity = ?, status = CASE WHEN ? >= quantity THEN 'completed' ELSE 'pending' END
         WHERE id = ?`)
@@ -243,10 +276,24 @@ export async function POST(request: Request) {
     if (quantity > available) {
       return Response.json({ error: `Quantidade maior que a disponível para alocação. Restam ${available} unidades.` }, { status: 400 });
     }
-    const fallbackIdentifier = String(payload.shipmentIdentifier ?? "").trim() || null;
+  }
+
+  const existingPosition = await env.DB.prepare(`SELECT id, shipment_identifier FROM allocations
+    WHERE code = ? AND street = ? COLLATE NOCASE AND "column" = ? COLLATE NOCASE AND level = ? COLLATE NOCASE
+    LIMIT 1`)
+    .bind(targetCode, street, column, level)
+    .first<{ id: number; shipment_identifier: string | null }>();
+
+  if (existingPosition) {
+    const mergedIdentifier = mergeShipmentIdentifiers(existingPosition.shipment_identifier, shipmentIdentifier);
+    statements.push(
+      env.DB.prepare("UPDATE allocations SET quantity = quantity + ?, shipment_identifier = ? WHERE id = ?")
+        .bind(quantity, mergedIdentifier, existingPosition.id),
+    );
+  } else {
     statements.push(
       env.DB.prepare(`INSERT INTO allocations (code, shipment_identifier, street, "column", level, quantity) VALUES (?, ?, ?, ?, ?, ?)`)
-        .bind(code, fallbackIdentifier, street, column, level, quantity),
+        .bind(targetCode, shipmentIdentifier, street, column, level, quantity),
     );
   }
 

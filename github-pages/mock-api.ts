@@ -213,6 +213,18 @@ function foreignData() {
   };
 }
 
+function mergeShipmentIdentifiers(existing: unknown, incoming: unknown) {
+  const first = String(existing ?? "").trim();
+  const second = String(incoming ?? "").trim();
+  if (!first) return second || null;
+  if (!second) return first;
+  const parts = first.split(",").map((part) => part.trim()).filter(Boolean);
+  if (!parts.some((part) => part.toLowerCase() === second.toLowerCase())) {
+    parts.push(second);
+  }
+  return parts.join(", ");
+}
+
 function resolveTaskShipmentIdentifier(task: DemoRecord) {
   const shipment = state.shipments.find((entry) => entry.id === task.shipment_id);
   const order = shipment?.purchase_order_id
@@ -457,7 +469,19 @@ async function allocationsApi(method: string, input: RequestInfo | URL, init?: R
     if (source.street.toLowerCase() === street.toLowerCase() && source.column.toLowerCase() === column.toLowerCase() && source.level.toLowerCase() === level.toLowerCase()) {
       return json({ error: "A posição de destino deve ser diferente da posição atual." }, 400);
     }
-    if (quantity === source.quantity) {
+    const destination = state.allocations.find((entry) =>
+      entry.id !== source.id
+      && entry.code === source.code
+      && String(entry.street).toLowerCase() === street.toLowerCase()
+      && String(entry.column).toLowerCase() === column.toLowerCase()
+      && String(entry.level).toLowerCase() === level.toLowerCase(),
+    );
+    if (destination) {
+      destination.quantity += quantity;
+      destination.shipment_identifier = mergeShipmentIdentifiers(destination.shipment_identifier, source.shipment_identifier);
+      source.quantity -= quantity;
+      if (source.quantity <= 0) state.allocations = state.allocations.filter((entry) => entry.id !== source.id);
+    } else if (quantity === source.quantity) {
       source.street = street;
       source.column = column;
       source.level = level;
@@ -485,6 +509,9 @@ async function allocationsApi(method: string, input: RequestInfo | URL, init?: R
     return json({ error: "Informe produto e quantidade válida para alocação." }, 400);
   }
 
+  let targetCode = String(payload.code);
+  let shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim() || null;
+
   if (Number.isInteger(requestedTaskId) && requestedTaskId > 0) {
     const task = state.allocationTasks.find((entry) => entry.id === requestedTaskId && entry.status === "pending");
     if (!task) return json({ error: "Embarque pendente não encontrado." }, 404);
@@ -492,30 +519,37 @@ async function allocationsApi(method: string, input: RequestInfo | URL, init?: R
     if (quantity > taskRemaining) {
       return json({ error: `Quantidade maior que o saldo deste embarque (${resolveTaskShipmentIdentifier(task)}). Restam ${taskRemaining} unidades.` }, 400);
     }
+    targetCode = task.code;
+    shipmentIdentifier = resolveTaskShipmentIdentifier(task);
     task.allocated_quantity += quantity;
     if (task.allocated_quantity >= task.quantity) task.status = "completed";
-    state.allocations.push({
-      id: next("allocation"),
-      code: task.code,
-      shipment_identifier: resolveTaskShipmentIdentifier(task),
-      street: payload.street,
-      column: payload.column,
-      level: payload.level,
-      quantity,
-      created_at: now(),
-    });
   } else {
     const available = Math.max(item.gh - allocated, 0);
     if (quantity > available) {
       return json({ error: `Quantidade maior que a disponível para alocação. Restam ${available} unidades.` }, 400);
     }
+  }
+
+  const street = String(payload.street ?? "").trim();
+  const column = String(payload.column ?? "").trim();
+  const level = String(payload.level ?? "").trim();
+  const existingPosition = state.allocations.find((entry) =>
+    entry.code === targetCode
+    && String(entry.street).toLowerCase() === street.toLowerCase()
+    && String(entry.column).toLowerCase() === column.toLowerCase()
+    && String(entry.level).toLowerCase() === level.toLowerCase(),
+  );
+  if (existingPosition) {
+    existingPosition.quantity += quantity;
+    existingPosition.shipment_identifier = mergeShipmentIdentifiers(existingPosition.shipment_identifier, shipmentIdentifier);
+  } else {
     state.allocations.push({
       id: next("allocation"),
-      code: payload.code,
-      shipment_identifier: String(payload.shipmentIdentifier ?? "").trim() || null,
-      street: payload.street,
-      column: payload.column,
-      level: payload.level,
+      code: targetCode,
+      shipment_identifier: shipmentIdentifier,
+      street,
+      column,
+      level,
       quantity,
       created_at: now(),
     });
