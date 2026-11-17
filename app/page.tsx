@@ -220,7 +220,7 @@ export default function Home() {
   const [incomingShipments, setIncomingShipments] = useState<IncomingShipment[]>([]);
   const [selectedAllocationTask, setSelectedAllocationTask] = useState<number | null>(null);
   const [allocationFormOpen, setAllocationFormOpen] = useState(false);
-  const [editingAllocation, setEditingAllocation] = useState<Allocation | null>(null);
+  const [editingAllocation, setEditingAllocation] = useState<(Allocation & { isReturn?: boolean }) | null>(null);
   const [transferStreet, setTransferStreet] = useState("");
   const [transferColumn, setTransferColumn] = useState("");
   const [transferLevel, setTransferLevel] = useState("");
@@ -623,7 +623,7 @@ export default function Home() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          action: "transfer",
+          action: editingAllocation.isReturn ? "transfer_return" : "transfer",
           allocationId: editingAllocation.id,
           street: transferStreet,
           column: transferColumn,
@@ -634,6 +634,9 @@ export default function Home() {
       const data = await response.json() as { inventory?: Array<Omit<StockItem, "ghCommitted">>; allocations?: Allocation[]; tasks?: AllocationTask[]; incomingShipments?: IncomingShipment[]; error?: string };
       if (!response.ok) throw new Error(data.error ?? "Não foi possível transferir a posição.");
       applyAllocationsData(data);
+      if (editingAllocation.isReturn) {
+        await refreshLogistics();
+      }
       setEditingAllocation(null);
       setTransferError("");
     } catch (error) {
@@ -1003,20 +1006,6 @@ export default function Home() {
                 <h1>Alocação</h1>
                 <p className="subtitle">Distribua o Estoque GH por rua, coluna e nível.</p>
               </div>
-              {allocationView === "gh" && <button className="primary-button" type="button" onClick={() => {
-                const firstTask = allocationTasks[0] ?? null;
-                if (firstTask) {
-                  const taskRemaining = Math.max(firstTask.quantity - firstTask.allocated_quantity, 0);
-                  setAllocationCode(firstTask.code);
-                  setSelectedAllocationTask(firstTask.id);
-                  setAllocationQuantity(String(taskRemaining));
-                } else {
-                  setSelectedAllocationTask(null);
-                  setAllocationQuantity("");
-                }
-                setAllocationError(""); setStreet(""); setAllocationColumn(""); setLevel("");
-                setAllocationFormOpen(true);
-              }}>Editar produtos</button>}
             </div>
 
             {allocationError && <p className="form-error page-error" role="alert">{allocationError}</p>}
@@ -1142,12 +1131,38 @@ export default function Home() {
                   </table>
                 </div>
               ) : (
-                <div className="empty-state"><strong>Nenhum produto alocado</strong><p>Use “Editar produtos” para registrar a primeira posição.</p></div>
+                <div className="empty-state"><strong>Nenhum produto alocado</strong><p>Aloque os produtos recebidos em “Aguardando alocação”.</p></div>
               ) : returnAllocations.length ? (
                 <div className="allocation-table-wrap">
                   <table className="allocation-table return-allocation-table">
-                    <thead><tr><th>Produto</th><th>Descrição</th><th>Pedido</th><th>Rua</th><th>Coluna</th><th>Nível</th><th className="numeric">Quantidade</th></tr></thead>
-                    <tbody>{returnAllocations.map((position) => <tr key={position.id}><td><span className="item-code">{position.code}</span></td><td className="description">{position.description} · {position.finish}</td><td>{position.order_number}</td><td>{position.street}</td><td>{position.column}</td><td>{position.level}</td><td className="numeric strong-number">{position.quantity}</td></tr>)}</tbody>
+                    <thead><tr><th>Produto</th><th>Descrição</th><th>Pedido</th><th>Rua</th><th>Coluna</th><th>Nível</th><th className="numeric">Quantidade</th><th className="numeric">Ações</th></tr></thead>
+                    <tbody>
+                      {returnAllocations.map((position) => (
+                        <tr key={position.id}>
+                          <td><span className="item-code">{position.code}</span></td>
+                          <td className="description">{position.description} · {position.finish}</td>
+                          <td>{position.order_number}</td>
+                          <td>{position.street}</td>
+                          <td>{position.column}</td>
+                          <td>{position.level}</td>
+                          <td className="numeric strong-number">{position.quantity}</td>
+                          <td className="allocation-action-cell">
+                            <button
+                              className="secondary-button compact"
+                              type="button"
+                              onClick={() => {
+                                setEditingAllocation({ ...position, isReturn: true });
+                                setTransferStreet(position.street);
+                                setTransferColumn(position.column);
+                                setTransferLevel(position.level);
+                                setTransferQuantity(String(position.quantity));
+                                setTransferError("");
+                              }}
+                            >Editar</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
                   </table>
                 </div>
               ) : <div className="empty-state"><strong>Nenhum produto devolvido</strong><p>Os itens de empréstimo aparecerão aqui após a devolução ser confirmada pela Logística.</p></div>}
@@ -1640,7 +1655,8 @@ export default function Home() {
       )}
 
       {editingAllocation && (() => {
-        const destinationMatch = allocations.find((entry) =>
+        const sourceList = editingAllocation.isReturn ? returnAllocations : allocations;
+        const destinationMatch = sourceList.find((entry) =>
           entry.id !== editingAllocation.id
           && entry.code === editingAllocation.code
           && entry.street.trim().toLowerCase() === transferStreet.trim().toLowerCase()

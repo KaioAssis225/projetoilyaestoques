@@ -501,6 +501,53 @@ async function allocationsApi(method: string, input: RequestInfo | URL, init?: R
     save();
     return json(allocationsData());
   }
+  if (payload.action === "transfer_return") {
+    const allocationId = Number(payload.allocationId);
+    const street = String(payload.street ?? "").trim();
+    const column = String(payload.column ?? "").trim();
+    const level = String(payload.level ?? "").trim();
+    const quantity = Number(payload.quantity);
+    if (!Number.isInteger(allocationId) || allocationId <= 0 || !street || !column || !level || !Number.isInteger(quantity) || quantity <= 0) {
+      return json({ error: "Informe posição de destino (rua, coluna, nível) e quantidade válida para transferência." }, 400);
+    }
+    const source = state.returnAllocations.find((entry) => entry.id === allocationId);
+    if (!source) return json({ error: "Posição de devolução não encontrada." }, 404);
+    if (quantity > source.quantity) return json({ error: `Quantidade maior que o saldo da posição (${source.quantity} un.).` }, 400);
+    if (source.street.toLowerCase() === street.toLowerCase() && source.column.toLowerCase() === column.toLowerCase() && source.level.toLowerCase() === level.toLowerCase()) {
+      return json({ error: "A posição de destino deve ser diferente da posição atual." }, 400);
+    }
+    const destination = state.returnAllocations.find((entry) =>
+      entry.id !== source.id
+      && entry.code === source.code
+      && String(entry.street).toLowerCase() === street.toLowerCase()
+      && String(entry.column).toLowerCase() === column.toLowerCase()
+      && String(entry.level).toLowerCase() === level.toLowerCase(),
+    );
+    if (destination) {
+      destination.quantity += quantity;
+      source.quantity -= quantity;
+      if (source.quantity <= 0) state.returnAllocations = state.returnAllocations.filter((entry) => entry.id !== source.id);
+    } else if (quantity === source.quantity) {
+      source.street = street;
+      source.column = column;
+      source.level = level;
+    } else {
+      source.quantity -= quantity;
+      state.returnAllocations.push({
+        id: next("returnAllocation"),
+        logistics_order_item_id: source.logistics_order_item_id ?? 0,
+        code: source.code,
+        street,
+        column,
+        level,
+        quantity,
+        order_number: source.order_number,
+        created_at: now(),
+      });
+    }
+    save();
+    return json(allocationsData());
+  }
   const item = inventoryItem(String(payload.code));
   const quantity = Number(payload.quantity);
   const allocated = state.allocations.filter((entry) => entry.code === payload.code).reduce((sum, entry) => sum + entry.quantity, 0);

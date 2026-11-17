@@ -52,6 +52,16 @@ async function ensureAllocationsTable() {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS return_allocations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      logistics_order_item_id INTEGER NOT NULL,
+      code TEXT NOT NULL,
+      street TEXT NOT NULL,
+      "column" TEXT NOT NULL,
+      level TEXT NOT NULL,
+      quantity INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
   ]);
 
   const allocationColumns = await env.DB.prepare("PRAGMA table_info(allocations)").all<{ name: string }>();
@@ -203,6 +213,68 @@ async function transferAllocation(payload: Record<string, unknown>) {
   return null;
 }
 
+async function transferReturnAllocation(payload: Record<string, unknown>) {
+  const allocationId = Number(payload.allocationId);
+  const street = String(payload.street ?? "").trim();
+  const column = String(payload.column ?? "").trim();
+  const level = String(payload.level ?? "").trim();
+  const quantity = Number(payload.quantity);
+
+  if (!Number.isInteger(allocationId) || allocationId <= 0 || !street || !column || !level || !Number.isInteger(quantity) || quantity <= 0) {
+    return Response.json({ error: "Informe posição de destino (rua, coluna, nível) e quantidade válida para transferência." }, { status: 400 });
+  }
+
+  const source = await env.DB.prepare(`SELECT id, logistics_order_item_id, code, street, "column", level, quantity FROM return_allocations WHERE id = ?`)
+    .bind(allocationId)
+    .first<{ id: number; logistics_order_item_id: number; code: string; street: string; column: string; level: string; quantity: number }>();
+
+  if (!source) {
+    return Response.json({ error: "Posição de devolução não encontrada." }, { status: 404 });
+  }
+  if (quantity > source.quantity) {
+    return Response.json({ error: `Quantidade maior que o saldo da posição (${source.quantity} un.).` }, { status: 400 });
+  }
+  if (
+    source.street.toLowerCase() === street.toLowerCase()
+    && source.column.toLowerCase() === column.toLowerCase()
+    && source.level.toLowerCase() === level.toLowerCase()
+  ) {
+    return Response.json({ error: "A posição de destino deve ser diferente da posição atual." }, { status: 400 });
+  }
+
+  const destination = await env.DB.prepare(`SELECT id FROM return_allocations
+    WHERE code = ? AND street = ? COLLATE NOCASE AND "column" = ? COLLATE NOCASE AND level = ? COLLATE NOCASE AND id != ?
+    LIMIT 1`)
+    .bind(source.code, street, column, level, source.id)
+    .first<{ id: number }>();
+
+  const statements: D1PreparedStatement[] = [];
+  if (destination) {
+    statements.push(
+      quantity === source.quantity
+        ? env.DB.prepare("DELETE FROM return_allocations WHERE id = ?").bind(source.id)
+        : env.DB.prepare("UPDATE return_allocations SET quantity = quantity - ? WHERE id = ?").bind(quantity, source.id),
+      env.DB.prepare("UPDATE return_allocations SET quantity = quantity + ? WHERE id = ?")
+        .bind(quantity, destination.id),
+    );
+  } else if (quantity === source.quantity) {
+    statements.push(
+      env.DB.prepare(`UPDATE return_allocations SET street = ?, "column" = ?, level = ? WHERE id = ?`)
+        .bind(street, column, level, source.id),
+    );
+  } else {
+    statements.push(
+      env.DB.prepare("UPDATE return_allocations SET quantity = quantity - ? WHERE id = ?")
+        .bind(quantity, source.id),
+      env.DB.prepare(`INSERT INTO return_allocations (logistics_order_item_id, code, street, "column", level, quantity) VALUES (?, ?, ?, ?, ?, ?)`)
+        .bind(source.logistics_order_item_id, source.code, street, column, level, quantity),
+    );
+  }
+
+  await env.DB.batch(statements);
+  return null;
+}
+
 export async function GET() {
   await ensureAllocationsTable();
   return readData();
@@ -215,6 +287,11 @@ export async function POST(request: Request) {
 
   if (action === "transfer") {
     const errorResponse = await transferAllocation(payload);
+    if (errorResponse) return errorResponse;
+    return readData();
+  }
+  if (action === "transfer_return") {
+    const errorResponse = await transferReturnAllocation(payload);
     if (errorResponse) return errorResponse;
     return readData();
   }
