@@ -151,12 +151,11 @@ const initialItems: StockItem[] = [
   { code: "MJ0100", description: "Mesa", finish: "Rose", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
 ];
 
-type SortKey = keyof Pick<StockItem, "code" | "description" | "finish" | "china" | "transit" | "port" | "gh" | "returns">;
+type SortKey = keyof Pick<StockItem, "code" | "description" | "china" | "transit" | "port" | "gh" | "returns">;
 
 const columns: { key: SortKey; label: string; numeric?: boolean }[] = [
   { key: "code", label: "Código do item" },
   { key: "description", label: "Descrição" },
-  { key: "finish", label: "Acabamento" },
   { key: "china", label: "Estoque China", numeric: true },
   { key: "transit", label: "Em trânsito", numeric: true },
   { key: "port", label: "Porto", numeric: true },
@@ -366,7 +365,7 @@ export default function Home() {
   const visibleItems = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase("pt-BR");
     return items
-      .filter((item) => [item.code, item.description, item.finish].some((value) => value.toLocaleLowerCase("pt-BR").includes(normalized)))
+      .filter((item) => [item.code, item.description].some((value) => value.toLocaleLowerCase("pt-BR").includes(normalized)))
       .sort((a, b) => {
         const aValue = a[sort.key];
         const bValue = b[sort.key];
@@ -710,7 +709,7 @@ export default function Home() {
               <label className="search">
                 <span className="sr-only">Pesquisar itens</span>
                 <span aria-hidden="true">⌕</span>
-                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar código, descrição ou acabamento" />
+                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar código ou descrição" />
                 {query && <button type="button" onClick={() => setQuery("")} aria-label="Limpar pesquisa">×</button>}
               </label>
             </div>
@@ -735,7 +734,6 @@ export default function Home() {
                   <tr key={item.code}>
                     <td><button className="item-code" type="button">{item.code}</button></td>
                     <td className="description">{item.description}</td>
-                    <td><span className="finish">{item.finish}</span></td>
                     <td className="numeric">{item.china}</td>
                     <td className="numeric">{item.transit}</td>
                     <td className="numeric">{item.port}</td>
@@ -748,7 +746,7 @@ export default function Home() {
             {visibleItems.length === 0 && (
               <div className="empty-state" role="status">
                 <strong>Nenhum item encontrado</strong>
-                <p>Revise o código, a descrição ou o acabamento pesquisado.</p>
+                <p>Revise o código ou a descrição pesquisada.</p>
                 <button type="button" onClick={() => setQuery("")}>Limpar busca</button>
               </div>
             )}
