@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import DemoOne from "@/components/ui/demo";
 
 type ValueKey = "costNet" | "costTax" | "retail" | "corporate";
 
@@ -39,6 +40,7 @@ const money = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL
 const unitMoney = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2 });
 
 export default function ValuationDashboard({ items }: { items: InventoryItem[] }) {
+  const [dashboardTab, setDashboardTab] = useState<"valuation" | "bento">("valuation");
   const [productFilter, setProductFilter] = useState("all");
   const [rankingBy, setRankingBy] = useState<ValueKey>("retail");
 
@@ -79,78 +81,126 @@ export default function ValuationDashboard({ items }: { items: InventoryItem[] }
           <h1>Dashboard de Valorização</h1>
           <p className="subtitle">Valorização financeira do estoque disponível no GH somado ao saldo de devolução.</p>
         </div>
-        <span className="updated"><span className="status-dot" aria-hidden="true" />Atualizado em tempo real</span>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+          <div style={{ display: "inline-flex", background: "var(--surface-sunken)", padding: "3px", borderRadius: "10px", border: "1px solid var(--border-subtle)" }}>
+            <button
+              type="button"
+              onClick={() => setDashboardTab("valuation")}
+              style={{
+                padding: "6px 14px",
+                fontSize: "12px",
+                fontWeight: 600,
+                borderRadius: "8px",
+                border: "none",
+                cursor: "pointer",
+                background: dashboardTab === "valuation" ? "var(--surface-elevated)" : "transparent",
+                color: dashboardTab === "valuation" ? "var(--text-primary)" : "var(--text-muted)",
+                boxShadow: dashboardTab === "valuation" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                transition: "all 0.15s ease",
+              }}
+            >
+              Visão Financeira
+            </button>
+            <button
+              type="button"
+              onClick={() => setDashboardTab("bento")}
+              style={{
+                padding: "6px 14px",
+                fontSize: "12px",
+                fontWeight: 600,
+                borderRadius: "8px",
+                border: "none",
+                cursor: "pointer",
+                background: dashboardTab === "bento" ? "var(--surface-elevated)" : "transparent",
+                color: dashboardTab === "bento" ? "var(--text-primary)" : "var(--text-muted)",
+                boxShadow: dashboardTab === "bento" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                transition: "all 0.15s ease",
+              }}
+            >
+              ⚡ Bento Grid / Features
+            </button>
+          </div>
+          <span className="updated"><span className="status-dot" aria-hidden="true" />Atualizado em tempo real</span>
+        </div>
       </div>
 
-      <section className="valuation-filter" aria-label="Filtros do dashboard">
-        <label>
-          <span>Produto</span>
-          <select value={productFilter} onChange={(event) => setProductFilter(event.target.value)}>
-            <option value="all">Todos os produtos</option>
-            {products.map((product) => (
-              <option key={product.code} value={product.code}>{product.code} · {product.label}</option>
-            ))}
-          </select>
-        </label>
-        <div><span>SKUs ativos</span><strong>{visibleProducts.length}</strong></div>
-        <div><span>Unidades consideradas</span><strong>{selectedUnits}</strong></div>
-        {productFilter !== "all" && <button type="button" onClick={() => setProductFilter("all")}>Limpar filtro</button>}
-      </section>
-
-      <section className="valuation-metrics" aria-label="Resumo de valorização">
-        {valueOptions.map((option) => (
-          <article key={option.key}>
-            <header>
-              <span>{option.label}</span>
-              <span className="valuation-lens-tag">{option.tag}</span>
-            </header>
-            <strong>{money.format(totals[option.key])}</strong>
-            <p>Base: {selectedUnits} unidades disponíveis (GH + Devolução)</p>
-          </article>
-        ))}
-      </section>
-
-      <section className="valuation-ranking" aria-labelledby="valuation-ranking-title">
-        <header>
-          <div>
-            <h2 id="valuation-ranking-title">Ranking por valorização</h2>
-          </div>
-          <label>
-            <span>Ordenar por</span>
-            <select value={rankingBy} onChange={(event) => setRankingBy(event.target.value as ValueKey)}>
-              {valueOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
-            </select>
-          </label>
-        </header>
-        <div className="valuation-ranking-list">
-          {ranking.map((product, index) => {
-            const total = product.quantity * product[rankingBy];
-            const ratio = Math.min(Math.max(total / maxRanking, 0), 1);
-            const share = totals[rankingBy] > 0 ? Math.round((total / totalSelectedRankingValue) * 100) : 0;
-            return (
-              <div className="valuation-ranking-row" key={product.code}>
-                <span className="valuation-position">#{String(index + 1).padStart(2, "0")}</span>
-                <div className="valuation-product">
-                  <strong>{product.label}</strong>
-                  <span>{product.code} · {product.quantity} un. ({share}% do total)</span>
-                  <small>{product.ghAvailable} GH disponível + {product.returns} devolução</small>
-                </div>
-                <div className="valuation-bar">
-                  <span style={{ transform: `scaleX(${ratio})` }} />
-                </div>
-                <div className="valuation-total">
-                  <strong>{money.format(total)}</strong>
-                  <span>{unitMoney.format(product[rankingBy])} / un.</span>
-                </div>
-              </div>
-            );
-          })}
+      {dashboardTab === "bento" ? (
+        <div className="rounded-2xl overflow-hidden border border-zinc-800 my-4">
+          <DemoOne />
         </div>
-        <footer>
-          Classificação ativa: <strong>{rankingLabel}</strong>
-          <span>Fórmula: (Estoque GH − Empenhos) + Estoque Devolução</span>
-        </footer>
-      </section>
+      ) : (
+        <>
+          <section className="valuation-filter" aria-label="Filtros do dashboard">
+            <label>
+              <span>Produto</span>
+              <select value={productFilter} onChange={(event) => setProductFilter(event.target.value)}>
+                <option value="all">Todos os produtos</option>
+                {products.map((product) => (
+                  <option key={product.code} value={product.code}>{product.code} · {product.label}</option>
+                ))}
+              </select>
+            </label>
+            <div><span>SKUs ativos</span><strong>{visibleProducts.length}</strong></div>
+            <div><span>Unidades consideradas</span><strong>{selectedUnits}</strong></div>
+            {productFilter !== "all" && <button type="button" onClick={() => setProductFilter("all")}>Limpar filtro</button>}
+          </section>
+
+          <section className="valuation-metrics" aria-label="Resumo de valorização">
+            {valueOptions.map((option) => (
+              <article key={option.key}>
+                <header>
+                  <span>{option.label}</span>
+                  <span className="valuation-lens-tag">{option.tag}</span>
+                </header>
+                <strong>{money.format(totals[option.key])}</strong>
+                <p>Base: {selectedUnits} unidades disponíveis (GH + Devolução)</p>
+              </article>
+            ))}
+          </section>
+
+          <section className="valuation-ranking" aria-labelledby="valuation-ranking-title">
+            <header>
+              <div>
+                <h2 id="valuation-ranking-title">Ranking por valorização</h2>
+              </div>
+              <label>
+                <span>Ordenar por</span>
+                <select value={rankingBy} onChange={(event) => setRankingBy(event.target.value as ValueKey)}>
+                  {valueOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+                </select>
+              </label>
+            </header>
+            <div className="valuation-ranking-list">
+              {ranking.map((product, index) => {
+                const total = product.quantity * product[rankingBy];
+                const ratio = Math.min(Math.max(total / maxRanking, 0), 1);
+                const share = totals[rankingBy] > 0 ? Math.round((total / totalSelectedRankingValue) * 100) : 0;
+                return (
+                  <div className="valuation-ranking-row" key={product.code}>
+                    <span className="valuation-position">#{String(index + 1).padStart(2, "0")}</span>
+                    <div className="valuation-product">
+                      <strong>{product.label}</strong>
+                      <span>{product.code} · {product.quantity} un. ({share}% do total)</span>
+                      <small>{product.ghAvailable} GH disponível + {product.returns} devolução</small>
+                    </div>
+                    <div className="valuation-bar">
+                      <span style={{ transform: `scaleX(${ratio})` }} />
+                    </div>
+                    <div className="valuation-total">
+                      <strong>{money.format(total)}</strong>
+                      <span>{unitMoney.format(product[rankingBy])} / un.</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <footer>
+              Classificação ativa: <strong>{rankingLabel}</strong>
+              <span>Fórmula: (Estoque GH − Empenhos) + Estoque Devolução</span>
+            </footer>
+          </section>
+        </>
+      )}
     </>
   );
 }
