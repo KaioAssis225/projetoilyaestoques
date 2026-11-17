@@ -1100,13 +1100,12 @@ export default function Home() {
               {allocationView === "gh" ? allocations.length ? (
                 <div className="allocation-table-wrap">
                   <table className="allocation-table">
-                    <thead><tr><th aria-sort={allocationSort === "asc" ? "ascending" : "descending"}><button type="button" onClick={() => setAllocationSort((current) => current === "asc" ? "desc" : "asc")}>Produto <span aria-hidden="true">{allocationSort === "asc" ? "↑" : "↓"}</span></button></th><th>Descrição</th><th>Embarque</th><th>Rua</th><th>Coluna</th><th>Nível</th><th className="numeric">Quantidade</th><th className="numeric">Ações</th></tr></thead>
+                    <thead><tr><th aria-sort={allocationSort === "asc" ? "ascending" : "descending"}><button type="button" onClick={() => setAllocationSort((current) => current === "asc" ? "desc" : "asc")}>Produto <span aria-hidden="true">{allocationSort === "asc" ? "↑" : "↓"}</span></button></th><th>Descrição</th><th>Rua</th><th>Coluna</th><th>Nível</th><th className="numeric">Quantidade</th><th className="numeric">Ações</th></tr></thead>
                     <tbody>
                       {sortedAllocations.map((allocation) => (
                         <tr key={allocation.id}>
                           <td><span className="item-code">{allocation.code}</span></td>
                           <td className="description">{allocation.description} · {allocation.finish}</td>
-                          <td>{allocation.shipment_identifier || "—"}</td>
                           <td>{allocation.street}</td>
                           <td>{allocation.column}</td>
                           <td>{allocation.level}</td>
@@ -1597,32 +1596,6 @@ export default function Home() {
               <button className="close-button" type="button" onClick={() => setAllocationFormOpen(false)} aria-label="Fechar">×</button>
             </div>
             <form onSubmit={submitAllocation}>
-              {allocationTasks.length > 0 && (
-                <label className="field"><span>Embarque / item para alocar</span>
-                  <select
-                    value={selectedAllocationTask ?? ""}
-                    onChange={(event) => {
-                      const nextTaskId = Number(event.target.value);
-                      const nextTask = allocationTasks.find((task) => task.id === nextTaskId) ?? null;
-                      setSelectedAllocationTask(nextTask?.id ?? null);
-                      if (nextTask) {
-                        setAllocationCode(nextTask.code);
-                        setAllocationQuantity(String(Math.max(nextTask.quantity - nextTask.allocated_quantity, 0)));
-                      }
-                      setAllocationError("");
-                    }}
-                  >
-                    {allocationTasks.map((task) => {
-                      const remaining = Math.max(task.quantity - task.allocated_quantity, 0);
-                      return (
-                        <option key={task.id} value={task.id}>
-                          Embarque {task.shipment_identifier} — {task.code} ({ task.description }) · {remaining} un. disponíveis
-                        </option>
-                      );
-                    })}
-                  </select>
-                </label>
-              )}
               {activeAllocationTask ? (
                 <div className="task-banner">
                   <div><span>Embarque</span><strong>{activeAllocationTask.shipment_identifier}</strong></div>
