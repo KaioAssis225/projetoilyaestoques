@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { ensureStockGuards, runGuardedBatch } from "../../../lib/stock-guards";
 
 type IncomingRow = {
   id: number;
@@ -68,6 +69,7 @@ async function ensureAllocationsTable() {
   if (!allocationColumns.results.some((column) => column.name === "shipment_identifier")) {
     await env.DB.prepare("ALTER TABLE allocations ADD COLUMN shipment_identifier TEXT").run();
   }
+  await ensureStockGuards();
 }
 
 function groupIncomingShipments(rows: IncomingRow[]) {
@@ -188,12 +190,12 @@ async function transferAllocation(payload: Record<string, unknown>) {
   const statements: D1PreparedStatement[] = [];
   if (destination) {
     const mergedIdentifier = mergeShipmentIdentifiers(destination.shipment_identifier, source.shipment_identifier);
+    // Sempre decrementa (o trigger bloqueia saldo negativo) e só apaga a origem se ela zerar de fato.
     statements.push(
-      quantity === source.quantity
-        ? env.DB.prepare("DELETE FROM allocations WHERE id = ?").bind(source.id)
-        : env.DB.prepare("UPDATE allocations SET quantity = quantity - ? WHERE id = ?").bind(quantity, source.id),
+      env.DB.prepare("UPDATE allocations SET quantity = quantity - ? WHERE id = ?").bind(quantity, source.id),
       env.DB.prepare("UPDATE allocations SET quantity = quantity + ?, shipment_identifier = ? WHERE id = ?")
         .bind(quantity, mergedIdentifier, destination.id),
+      env.DB.prepare("DELETE FROM allocations WHERE id = ? AND quantity = 0").bind(source.id),
     );
   } else if (quantity === source.quantity) {
     statements.push(
@@ -209,8 +211,7 @@ async function transferAllocation(payload: Record<string, unknown>) {
     );
   }
 
-  await env.DB.batch(statements);
-  return null;
+  return runGuardedBatch(statements);
 }
 
 async function transferReturnAllocation(payload: Record<string, unknown>) {
@@ -251,11 +252,10 @@ async function transferReturnAllocation(payload: Record<string, unknown>) {
   const statements: D1PreparedStatement[] = [];
   if (destination) {
     statements.push(
-      quantity === source.quantity
-        ? env.DB.prepare("DELETE FROM return_allocations WHERE id = ?").bind(source.id)
-        : env.DB.prepare("UPDATE return_allocations SET quantity = quantity - ? WHERE id = ?").bind(quantity, source.id),
+      env.DB.prepare("UPDATE return_allocations SET quantity = quantity - ? WHERE id = ?").bind(quantity, source.id),
       env.DB.prepare("UPDATE return_allocations SET quantity = quantity + ? WHERE id = ?")
         .bind(quantity, destination.id),
+      env.DB.prepare("DELETE FROM return_allocations WHERE id = ? AND quantity = 0").bind(source.id),
     );
   } else if (quantity === source.quantity) {
     statements.push(
@@ -271,8 +271,7 @@ async function transferReturnAllocation(payload: Record<string, unknown>) {
     );
   }
 
-  await env.DB.batch(statements);
-  return null;
+  return runGuardedBatch(statements);
 }
 
 export async function GET() {
@@ -296,7 +295,6 @@ export async function POST(request: Request) {
     return readData();
   }
 
-  const code = String(payload.code ?? "");
   const street = String(payload.street ?? "").trim();
   const column = String(payload.column ?? "").trim();
   const level = String(payload.level ?? "").trim();
@@ -307,22 +305,14 @@ export async function POST(request: Request) {
     return Response.json({ error: "Produto, rua, coluna, nível e quantidade são obrigatórios." }, { status: 400 });
   }
 
-  const item = await env.DB.prepare("SELECT gh FROM inventory WHERE code = ?")
-    .bind(code).first<{ gh: number }>();
-  if (!item) {
-    return Response.json({ error: "Código de produto inválido." }, { status: 400 });
-  }
-
-  const allocated = await env.DB.prepare("SELECT COALESCE(SUM(quantity), 0) AS total FROM allocations WHERE code = ?")
-    .bind(code).first<{ total: number }>();
-  const allocatedTotal = Number(allocated?.total ?? 0);
   const statements: D1PreparedStatement[] = [];
-
-  let targetCode = code;
+  let targetCode = String(payload.code ?? "").trim().toUpperCase();
   let shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim() || null;
+  let task: { id: number; code: string; quantity: number; allocated_quantity: number; shipment_identifier: string } | null = null;
 
+  // A tarefa do embarque define o produto: o código enviado pela tela é ignorado nesse caso.
   if (Number.isInteger(taskId) && taskId > 0) {
-    const task = await env.DB.prepare(`SELECT t.id, t.code, t.quantity, t.allocated_quantity,
+    task = await env.DB.prepare(`SELECT t.id, t.code, t.quantity, t.allocated_quantity,
       COALESCE(po.shipment_identifier, s.shipment_identifier, CASE WHEN t.shipment_id IS NOT NULL THEN 'Embarque #' || t.shipment_id ELSE 'Entrada avulsa #' || t.id END) AS shipment_identifier
       FROM allocation_tasks t
       LEFT JOIN shipments s ON s.id = t.shipment_id
@@ -330,28 +320,50 @@ export async function POST(request: Request) {
       WHERE t.id = ? AND t.status = 'pending'`)
       .bind(taskId)
       .first<{ id: number; code: string; quantity: number; allocated_quantity: number; shipment_identifier: string }>();
-
     if (!task) {
       return Response.json({ error: "Embarque pendente não encontrado." }, { status: 404 });
     }
+    targetCode = task.code;
+    shipmentIdentifier = task.shipment_identifier;
+  }
+
+  const item = await env.DB.prepare("SELECT gh FROM inventory WHERE code = ?")
+    .bind(targetCode).first<{ gh: number }>();
+  if (!item) {
+    return Response.json({ error: "Código de produto inválido." }, { status: 400 });
+  }
+
+  const [allocated, pendingTasks] = await Promise.all([
+    env.DB.prepare("SELECT COALESCE(SUM(quantity), 0) AS total FROM allocations WHERE code = ?")
+      .bind(targetCode).first<{ total: number }>(),
+    env.DB.prepare("SELECT COALESCE(SUM(quantity - allocated_quantity), 0) AS total FROM allocation_tasks WHERE code = ? AND status = 'pending'")
+      .bind(targetCode).first<{ total: number }>(),
+  ]);
+  const allocatedTotal = Number(allocated?.total ?? 0);
+  const pendingTaskTotal = Math.max(Number(pendingTasks?.total ?? 0), 0);
+
+  if (task) {
     const taskRemaining = Math.max(task.quantity - task.allocated_quantity, 0);
     if (quantity > taskRemaining) {
       return Response.json({ error: `Quantidade maior que o saldo deste embarque (${task.shipment_identifier}). Restam ${taskRemaining} unidades.` }, { status: 400 });
     }
-
-    targetCode = task.code;
-    shipmentIdentifier = task.shipment_identifier;
-    const nextAllocated = task.allocated_quantity + quantity;
+    // As posições nunca podem somar mais que o Estoque GH. Antes, o GH era aumentado aqui sem aviso.
+    if (allocatedTotal + quantity > item.gh) {
+      return Response.json({ error: `O Estoque GH de ${targetCode} tem ${item.gh} unidades e ${allocatedTotal} já estão alocadas. Revise o ajuste de estoque antes de alocar este embarque.` }, { status: 409 });
+    }
+    // Incremento relativo: o trigger guard_allocation_tasks_limit aborta se outra requisição já alocou o saldo.
     statements.push(
       env.DB.prepare(`UPDATE allocation_tasks
-        SET allocated_quantity = ?, status = CASE WHEN ? >= quantity THEN 'completed' ELSE 'pending' END
+        SET allocated_quantity = allocated_quantity + ?,
+            status = CASE WHEN allocated_quantity + ? >= quantity THEN 'completed' ELSE 'pending' END
         WHERE id = ?`)
-        .bind(nextAllocated, nextAllocated, task.id),
+        .bind(quantity, quantity, task.id),
     );
   } else {
-    const available = Math.max(item.gh - allocatedTotal, 0);
+    // Unidades de embarques ainda não alocados já estão no GH, mas pertencem às suas tarefas.
+    const available = Math.max(item.gh - allocatedTotal - pendingTaskTotal, 0);
     if (quantity > available) {
-      return Response.json({ error: `Quantidade maior que a disponível para alocação. Restam ${available} unidades.` }, { status: 400 });
+      return Response.json({ error: `Quantidade maior que a disponível para alocação avulsa. Restam ${available} unidades (${pendingTaskTotal} reservadas para embarques aguardando alocação).` }, { status: 400 });
     }
   }
 
@@ -374,13 +386,7 @@ export async function POST(request: Request) {
     );
   }
 
-  if (item.gh < allocatedTotal + quantity) {
-    statements.push(
-      env.DB.prepare("UPDATE inventory SET gh = ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?")
-        .bind(allocatedTotal + quantity, code),
-    );
-  }
-
-  await env.DB.batch(statements);
+  const errorResponse = await runGuardedBatch(statements);
+  if (errorResponse) return errorResponse;
   return readData();
 }

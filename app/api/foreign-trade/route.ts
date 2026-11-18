@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { ensureStockGuards, runGuardedBatch } from "../../../lib/stock-guards";
 
 type InventoryRow = {
   code: string;
@@ -165,6 +166,19 @@ async function ensureDatabase() {
     await db.prepare("ALTER TABLE inventory ADD COLUMN returns INTEGER NOT NULL DEFAULT 0").run();
   }
 
+  // Registro único de identificadores de embarque (compras e retiradas da China).
+  // O INSERT no registro é o primeiro comando de cada lote: um identificador repetido
+  // aborta a transação inteira, inclusive em requisições simultâneas.
+  const registry = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'shipment_identifier_registry'").first();
+  if (!registry) {
+    await db.batch([
+      db.prepare("CREATE TABLE IF NOT EXISTS shipment_identifier_registry (identifier TEXT PRIMARY KEY COLLATE NOCASE)"),
+      db.prepare(`INSERT OR IGNORE INTO shipment_identifier_registry (identifier)
+        SELECT shipment_identifier FROM purchase_orders
+        UNION SELECT shipment_identifier FROM shipments WHERE shipment_identifier IS NOT NULL AND TRIM(shipment_identifier) != ''`),
+    ]);
+  }
+
   const catalogProducts: Array<[string, string, string]> = [
     ["CD0100", "Cadeira", "Taupe"],
     ["SF0100", "Sofá", "Areia"],
@@ -191,6 +205,7 @@ async function ensureDatabase() {
         .bind(code, description, finish),
     ),
   );
+  await ensureStockGuards();
 }
 
 function positiveInteger(value: unknown) {
@@ -372,34 +387,33 @@ async function purchase(payload: Record<string, unknown>) {
     return Response.json({ error: "Informe a previsão de chegada ao Porto para o embarque." }, { status: 400 });
   }
 
-  let purchaseOrderId: number | null = null;
-  try {
-    const orderResult = await env.DB.prepare("INSERT INTO purchase_orders (shipment_identifier, invoice_code, dollar_rate_cents, freight_usd_cents) VALUES (?, ?, ?, ?)")
-      .bind(shipmentIdentifier, invoiceCode, dollarRateCents, freightUsdCents).run();
-    purchaseOrderId = Number(orderResult.meta.last_row_id);
-    const statements = items.flatMap((item) => {
+  // Lote único (transação): o pedido, os itens, os saldos e as remessas são gravados juntos ou nada é gravado.
+  // Os itens localizam o pedido pelo identificador, que é único.
+  const purchaseOrderIdSql = "(SELECT id FROM purchase_orders WHERE shipment_identifier = ? COLLATE NOCASE)";
+  const statements = [
+    env.DB.prepare("INSERT INTO shipment_identifier_registry (identifier) VALUES (?)").bind(shipmentIdentifier),
+    env.DB.prepare("INSERT INTO purchase_orders (shipment_identifier, invoice_code, dollar_rate_cents, freight_usd_cents) VALUES (?, ?, ?, ?)")
+      .bind(shipmentIdentifier, invoiceCode, dollarRateCents, freightUsdCents),
+    ...items.flatMap((item) => {
       const itemStatements = [
         env.DB.prepare(`INSERT INTO purchase_order_items
           (purchase_order_id, code, unit_value_usd_cents, total_quantity, china_quantity, transit_quantity)
-          VALUES (?, ?, ?, ?, ?, ?)`)
-          .bind(purchaseOrderId, item.code, item.unitValueUsdCents, item.totalQuantity, item.chinaQuantity, item.transitQuantity),
+          VALUES (${purchaseOrderIdSql}, ?, ?, ?, ?, ?)`)
+          .bind(shipmentIdentifier, item.code, item.unitValueUsdCents, item.totalQuantity, item.chinaQuantity, item.transitQuantity),
         env.DB.prepare("UPDATE inventory SET china = china + ?, transit = transit + ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?")
           .bind(item.chinaQuantity, item.transitQuantity, item.code),
       ];
       if (item.transitQuantity > 0) {
         itemStatements.push(
-          env.DB.prepare("INSERT INTO shipments (purchase_order_id, shipment_identifier, dollar_rate_cents, freight_usd_cents, code, quantity, unit_value_usd_cents, source, stage, due_date) VALUES (?, ?, ?, ?, ?, ?, ?, 'purchase', 'transit', ?)")
-            .bind(purchaseOrderId, shipmentIdentifier, dollarRateCents, freightUsdCents, item.code, item.transitQuantity, item.unitValueUsdCents, dueDate),
+          env.DB.prepare(`INSERT INTO shipments (purchase_order_id, shipment_identifier, dollar_rate_cents, freight_usd_cents, code, quantity, unit_value_usd_cents, source, stage, due_date)
+            VALUES (${purchaseOrderIdSql}, ?, ?, ?, ?, ?, ?, 'purchase', 'transit', ?)`)
+            .bind(shipmentIdentifier, shipmentIdentifier, dollarRateCents, freightUsdCents, item.code, item.transitQuantity, item.unitValueUsdCents, dueDate),
         );
       }
       return itemStatements;
-    });
-    await env.DB.batch(statements);
-  } catch (error) {
-    if (purchaseOrderId) await env.DB.prepare("DELETE FROM purchase_orders WHERE id = ?").bind(purchaseOrderId).run();
-    throw error;
-  }
-  return null;
+    }),
+  ];
+  return runGuardedBatch(statements);
 }
 
 async function dispatchChina(payload: Record<string, unknown>) {
@@ -440,13 +454,16 @@ async function dispatchChina(payload: Record<string, unknown>) {
     items.push({ code, quantity, unitValueUsdCents: valueCents });
   }
 
-  await env.DB.batch(items.flatMap((item) => [
-    env.DB.prepare("UPDATE inventory SET china = china - ?, transit = transit + ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?")
-      .bind(item.quantity, item.quantity, item.code),
-    env.DB.prepare("INSERT INTO shipments (shipment_identifier, dollar_rate_cents, freight_usd_cents, code, quantity, unit_value_usd_cents, source, stage, due_date) VALUES (?, ?, ?, ?, ?, ?, 'china', 'transit', ?)")
-      .bind(shipmentIdentifier, dollarRateCents, freightUsdCents, item.code, item.quantity, item.unitValueUsdCents, dueDate),
-  ]));
-  return null;
+  // O registro do identificador e o trigger de saldo não negativo tornam a retirada segura contra clique duplo.
+  return runGuardedBatch([
+    env.DB.prepare("INSERT INTO shipment_identifier_registry (identifier) VALUES (?)").bind(shipmentIdentifier),
+    ...items.flatMap((item) => [
+      env.DB.prepare("UPDATE inventory SET china = china - ?, transit = transit + ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?")
+        .bind(item.quantity, item.quantity, item.code),
+      env.DB.prepare("INSERT INTO shipments (shipment_identifier, dollar_rate_cents, freight_usd_cents, code, quantity, unit_value_usd_cents, source, stage, due_date) VALUES (?, ?, ?, ?, ?, ?, 'china', 'transit', ?)")
+        .bind(shipmentIdentifier, dollarRateCents, freightUsdCents, item.code, item.quantity, item.unitValueUsdCents, dueDate),
+    ]),
+  ]);
 }
 
 async function shipmentRowsFor(payload: Record<string, unknown>) {
@@ -495,20 +512,21 @@ export async function POST(request: Request) {
       const ghDueDate = validDate(payload.dueDate);
       if (!ghDueDate) return Response.json({ error: "Informe a previsão de chegada ao Estoque GH." }, { status: 400 });
       for (const shipment of shipmentRows.results) {
+        // A etapa vai primeiro: num clique duplo, o trigger de etapa explica o motivo do bloqueio.
         statements.push(
-          env.DB.prepare("UPDATE inventory SET transit = transit - ?, port = port + ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?")
-            .bind(shipment.quantity, shipment.quantity, shipment.code),
           env.DB.prepare("UPDATE shipments SET stage = 'port', due_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
             .bind(ghDueDate, shipment.id),
+          env.DB.prepare("UPDATE inventory SET transit = transit - ?, port = port + ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?")
+            .bind(shipment.quantity, shipment.quantity, shipment.code),
         );
       }
     } else if (stage === "port") {
       for (const shipment of shipmentRows.results) {
         statements.push(
-          env.DB.prepare("UPDATE inventory SET port = port - ?, gh = gh + ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?")
-            .bind(shipment.quantity, shipment.quantity, shipment.code),
           env.DB.prepare("UPDATE shipments SET stage = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
             .bind(shipment.id),
+          env.DB.prepare("UPDATE inventory SET port = port - ?, gh = gh + ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?")
+            .bind(shipment.quantity, shipment.quantity, shipment.code),
           env.DB.prepare(`INSERT INTO allocation_tasks (shipment_id, code, quantity)
             SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM allocation_tasks WHERE shipment_id = ?)`)
             .bind(shipment.id, shipment.code, shipment.quantity, shipment.id),
@@ -517,9 +535,12 @@ export async function POST(request: Request) {
     } else {
       return Response.json({ error: "Etapa de embarque inválida." }, { status: 409 });
     }
-    await env.DB.batch(statements);
+    // O trigger de etapa aborta o lote se outra requisição já moveu este embarque.
+    const errorResponse = await runGuardedBatch(statements);
+    if (errorResponse) return errorResponse;
   } else if (action === "reset_test_data") {
     await env.DB.batch([
+      env.DB.prepare("DELETE FROM shipment_identifier_registry"),
       env.DB.prepare("DELETE FROM return_allocations"),
       env.DB.prepare("DELETE FROM logistics_order_sources"),
       env.DB.prepare("DELETE FROM logistics_order_items"),

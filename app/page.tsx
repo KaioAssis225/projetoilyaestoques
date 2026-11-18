@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import ValuationDashboard from "./valuation-dashboard";
+import ValuationDashboard, { type ExitSummaryItem } from "./valuation-dashboard";
 
 type StockItem = {
   code: string;
@@ -246,7 +246,12 @@ function NavIcon({ name }: { name: "stock" | "dashboard" | "commercial" | "forei
   }
 }
 
+function hasAnyStock(item: StockItem) {
+  return item.china + item.transit + item.port + item.gh + item.returns + item.ghCommitted > 0;
+}
+
 function GhBalance({ total, committed }: { total: number; committed: number }) {
+  if (total === 0 && committed === 0) return <span className="stage-pill zero">0</span>;
   return (
     <div className="stock-balance">
       <strong className="stock-total">{total}</strong>
@@ -260,6 +265,8 @@ export default function Home() {
   const [activeSection, setActiveSection] = useState<"stock" | "dashboard" | "commercial" | "foreign" | "logistics" | "allocation">("stock");
   const [items, setItems] = useState(initialItems);
   const [query, setQuery] = useState("");
+  const [showZeroItems, setShowZeroItems] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
   const [sort, setSort] = useState<{ key: SortKey; direction: "asc" | "desc" }>({ key: "code", direction: "asc" });
   const [commitments, setCommitments] = useState<CommitmentDocument[]>([]);
   const [commitmentChoiceOpen, setCommitmentChoiceOpen] = useState(false);
@@ -285,6 +292,9 @@ export default function Home() {
   const [arrivalAction, setArrivalAction] = useState<{ shipment: Shipment; type: "arrived" | "delayed" } | null>(null);
   const [arrivalDate, setArrivalDate] = useState("");
   const [logisticsEvents, setLogisticsEvents] = useState<LogisticsEvent[]>([]);
+  const [exitSummary, setExitSummary] = useState<ExitSummaryItem[]>([]);
+  // Uma operação por vez: o React aplica o `disabled` dos botões antes de tratar o próximo clique.
+  const [submitting, setSubmitting] = useState(false);
   const [openLogisticsOrders, setOpenLogisticsOrders] = useState<LogisticsOrder[]>([]);
   const [logisticsOrders, setLogisticsOrders] = useState<LogisticsOrder[]>([]);
   const [returnAllocations, setReturnAllocations] = useState<ReturnAllocation[]>([]);
@@ -318,6 +328,23 @@ export default function Home() {
   const [allocationError, setAllocationError] = useState("");
   const [allocationSort, setAllocationSort] = useState<"asc" | "desc">("asc");
   const [allocationView, setAllocationView] = useState<"gh" | "returns">("gh");
+
+  async function runExclusive(task: () => Promise<void>) {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await task();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function exclusive(handler: (event: FormEvent<HTMLFormElement>) => Promise<void>) {
+    return (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      void runExclusive(() => handler(event));
+    };
+  }
 
   function findStockItem(code: string) {
     const normalized = code.trim().toUpperCase();
@@ -386,6 +413,7 @@ export default function Home() {
         ...item,
         ghCommitted: current.find((candidate) => candidate.code === item.code)?.ghCommitted ?? 0,
       })));
+      setLastSyncedAt(new Date());
       setForeignError("");
     } catch (error) {
       setForeignError(error instanceof Error ? error.message : "Não foi possível carregar os dados.");
@@ -403,6 +431,7 @@ export default function Home() {
         ...item,
         ghCommitted: current.find((candidate) => candidate.code === item.code)?.ghCommitted ?? 0,
       })));
+      setLastSyncedAt(new Date());
     }
   }
 
@@ -412,15 +441,19 @@ export default function Home() {
     applyAllocationsData(data);
   }
 
-  function applyLogisticsData(data: { inventory?: Array<Omit<StockItem, "ghCommitted">>; events?: LogisticsEvent[]; openOrders?: LogisticsOrder[]; logisticsOrders?: LogisticsOrder[]; returnAllocations?: ReturnAllocation[] }) {
+  function applyLogisticsData(data: { inventory?: Array<Omit<StockItem, "ghCommitted">>; events?: LogisticsEvent[]; exitSummary?: ExitSummaryItem[]; openOrders?: LogisticsOrder[]; logisticsOrders?: LogisticsOrder[]; returnAllocations?: ReturnAllocation[] }) {
     setLogisticsEvents(data.events ?? []);
+    setExitSummary(data.exitSummary ?? []);
     setOpenLogisticsOrders(data.openOrders ?? []);
     setLogisticsOrders(data.logisticsOrders ?? []);
     setReturnAllocations(data.returnAllocations ?? []);
-    if (data.inventory) setItems((current) => data.inventory!.map((item) => ({
-      ...item,
-      ghCommitted: current.find((candidate) => candidate.code === item.code)?.ghCommitted ?? 0,
-    })));
+    if (data.inventory) {
+      setItems((current) => data.inventory!.map((item) => ({
+        ...item,
+        ghCommitted: current.find((candidate) => candidate.code === item.code)?.ghCommitted ?? 0,
+      })));
+      setLastSyncedAt(new Date());
+    }
   }
 
   async function refreshLogistics() {
@@ -486,9 +519,17 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  const zeroItemsCount = useMemo(() => items.filter((item) => !hasAnyStock(item)).length, [items]);
+  const syncedLabel = lastSyncedAt
+    ? `Atualizado às ${lastSyncedAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`
+    : "Carregando saldos…";
+
   const visibleItems = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase("pt-BR");
+    // Uma busca explícita sempre encontra o item, mesmo zerado.
+    const includeZero = showZeroItems || normalized.length > 0;
     return items
+      .filter((item) => includeZero || hasAnyStock(item))
       .filter((item) => [item.code, item.description].some((value) => value.toLocaleLowerCase("pt-BR").includes(normalized)))
       .sort((a, b) => {
         const aValue = a[sort.key];
@@ -498,7 +539,7 @@ export default function Home() {
           : String(aValue).localeCompare(String(bValue), "pt-BR");
         return sort.direction === "asc" ? result : -result;
       });
-  }, [items, query, sort]);
+  }, [items, query, sort, showZeroItems]);
 
   function changeSort(key: SortKey) {
     setSort((current) => ({ key, direction: current.key === key && current.direction === "asc" ? "desc" : "asc" }));
@@ -756,8 +797,12 @@ export default function Home() {
 
   async function submitLogistics(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (Number(adjustedQuantity) < logisticsItem.ghCommitted) {
-      setLogisticsError(`O ajuste não pode deixar o estoque abaixo das ${logisticsItem.ghCommitted} unidades empenhadas.`);
+    const allocatedForAdjustment = allocations
+      .filter((allocation) => allocation.code === logisticsCode)
+      .reduce((total, allocation) => total + allocation.quantity, 0);
+    const adjustmentFloor = Math.max(logisticsItem.ghCommitted, allocatedForAdjustment);
+    if (Number(adjustedQuantity) < adjustmentFloor) {
+      setLogisticsError(`O ajuste não pode deixar o Estoque GH abaixo de ${adjustmentFloor} unidades (${allocatedForAdjustment} alocadas, ${logisticsItem.ghCommitted} empenhadas).`);
       return;
     }
     try {
@@ -940,7 +985,7 @@ export default function Home() {
 
       <section className="workspace" id="conteudo">
         {activeSection === "dashboard" ? (
-          <ValuationDashboard items={items} logisticsEvents={logisticsEvents} />
+          <ValuationDashboard items={items} logisticsEvents={logisticsEvents} exitSummary={exitSummary} syncedLabel={syncedLabel} />
         ) : activeSection === "stock" ? (
           <>
         <div className="page-heading">
@@ -948,7 +993,7 @@ export default function Home() {
             <h1>Estoque</h1>
             <p className="subtitle">Visão consolidada da cadeia de suprimentos: da origem na China até a disponibilidade física no Estoque GH.</p>
           </div>
-          <span className="updated"><span className="status-dot" aria-hidden="true" />Sincronizado em tempo real</span>
+          <span className="updated"><span className="status-dot" aria-hidden="true" />{syncedLabel}</span>
         </div>
 
         <section className="supply-chain-overview" aria-label="Resumo da cadeia de estoque">
@@ -995,9 +1040,18 @@ export default function Home() {
           <div className="toolbar">
             <div>
               <h2 id="stock-table-title">Posição por item</h2>
-              <p>{visibleItems.length} {visibleItems.length === 1 ? "item encontrado" : "itens encontrados"}</p>
+              <p>
+                {visibleItems.length} {visibleItems.length === 1 ? "item" : "itens"}
+                {!showZeroItems && !query.trim() && zeroItemsCount > 0 ? ` com saldo · ${zeroItemsCount} sem saldo ocultos` : ""}
+              </p>
             </div>
             <div className="controls">
+              {zeroItemsCount > 0 && (
+                <label className="zero-toggle">
+                  <input type="checkbox" checked={showZeroItems} onChange={(event) => setShowZeroItems(event.target.checked)} />
+                  <span>Mostrar sem saldo</span>
+                </label>
+              )}
               <label className="search">
                 <span className="sr-only">Pesquisar itens</span>
                 <NavIcon name="search" />
@@ -1024,7 +1078,7 @@ export default function Home() {
               <tbody>
                 {visibleItems.map((item) => (
                   <tr key={item.code}>
-                    <td><button className="item-code" type="button">{item.code}</button></td>
+                    <td><span className="item-code">{item.code}</span></td>
                     <td className="description">{item.description}</td>
                     <td className="numeric"><span className={item.china > 0 ? "stage-pill china" : "stage-pill zero"}>{item.china}</span></td>
                     <td className="numeric"><span className={item.transit > 0 ? "stage-pill transit" : "stage-pill zero"}>{item.transit}</span></td>
@@ -1035,13 +1089,19 @@ export default function Home() {
                 ))}
               </tbody>
             </table>
-            {visibleItems.length === 0 && (
+            {visibleItems.length === 0 && (query.trim() ? (
               <div className="empty-state" role="status">
                 <strong>Nenhum item encontrado</strong>
                 <p>Revise o código ou a descrição pesquisada.</p>
                 <button type="button" onClick={() => setQuery("")}>Limpar busca</button>
               </div>
-            )}
+            ) : (
+              <div className="empty-state" role="status">
+                <strong>Nenhum item com saldo na cadeia</strong>
+                <p>Os produtos aparecem aqui assim que um pedido de compra é registrado no Comércio Exterior.</p>
+                {zeroItemsCount > 0 && <button type="button" onClick={() => setShowZeroItems(true)}>Mostrar os {zeroItemsCount} itens cadastrados</button>}
+              </div>
+            ))}
           </div>
           <footer className="table-note"><span className="status-dot" aria-hidden="true" /> Os saldos são atualizados automaticamente pelas movimentações.</footer>
         </section>
@@ -1522,7 +1582,7 @@ export default function Home() {
             {formError && <p className="form-error" role="alert">{formError}</p>}
             <div className="dialog-actions">
               <button className="secondary-button" type="button" onClick={() => setCommitmentToCancel(null)}>Manter documento</button>
-              <button className="danger-button" type="button" onClick={() => void confirmCommitmentCancellation()}>Confirmar cancelamento</button>
+              <button className="danger-button" type="button" disabled={submitting} onClick={() => void runExclusive(confirmCommitmentCancellation)}>Confirmar cancelamento</button>
             </div>
           </section>
         </div>
@@ -1539,7 +1599,7 @@ export default function Home() {
               </div>
               <button className="close-button" type="button" onClick={() => setFormOpen(false)} aria-label="Fechar">×</button>
             </div>
-            <form onSubmit={submitCommitment}>
+            <form onSubmit={exclusive(submitCommitment)}>
               <div className="document-lines">
                 <div className="document-lines-heading"><strong>Itens</strong><span>{commitmentLines.length} {commitmentLines.length === 1 ? "item" : "itens"}</span></div>
                 {commitmentLines.map((line, index) => {
@@ -1582,7 +1642,7 @@ export default function Home() {
 
               <div className="dialog-actions">
                 <button className="secondary-button" type="button" onClick={() => setFormOpen(false)}>Cancelar</button>
-                <button className="primary-button" type="submit">Confirmar empenho</button>
+                <button className="primary-button" type="submit" disabled={submitting}>Confirmar empenho</button>
               </div>
             </form>
           </section>
@@ -1618,7 +1678,7 @@ export default function Home() {
               <datalist id="foreign-product-codes">
                 {items.map((item) => <option key={item.code} value={item.code}>{item.code} — {item.description}</option>)}
               </datalist>
-              <form onSubmit={submitForeignForm}>
+              <form onSubmit={exclusive(submitForeignForm)}>
                 <div className="split-fields" style={{ gridTemplateColumns: "1.4fr 1fr 1fr" }}>
                   <label className="field">
                     <span>Embarque (nº do pedido / contêiner)</span>
@@ -1839,7 +1899,7 @@ export default function Home() {
                   </>
                 )}
                 {foreignError && <p className="form-error" role="alert">{foreignError}</p>}
-                <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setForeignForm(null)}>Cancelar</button><button className="primary-button" type="submit">Confirmar</button></div>
+                <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setForeignForm(null)}>Cancelar</button><button className="primary-button" type="submit" disabled={submitting}>Confirmar</button></div>
               </form>
             </section>
           </div>
@@ -1853,7 +1913,7 @@ export default function Home() {
               <div><h2 id="arrival-title">{arrivalAction.type === "arrived" ? "Confirmar chegada" : "Atualizar previsão"} · {arrivalAction.shipment.shipment_identifier}</h2></div>
               <button className="close-button" type="button" onClick={() => setArrivalAction(null)} aria-label="Fechar">×</button>
             </div>
-            <form onSubmit={submitArrival}>
+            <form onSubmit={exclusive(submitArrival)}>
               <p className="dialog-copy">
                 {arrivalAction.shipment.items.reduce((sum, item) => sum + item.quantity, 0)} unidades em {arrivalAction.shipment.items.length} {arrivalAction.shipment.items.length === 1 ? "item" : "itens"} · {arrivalAction.shipment.stage === "transit" ? "destino Porto" : "destino Estoque GH"}
               </p>
@@ -1861,7 +1921,7 @@ export default function Home() {
                 <label className="field"><span>{arrivalAction.type === "delayed" ? "Nova data prevista" : "Previsão de chegada ao Estoque GH"}</span><input type="date" value={arrivalDate} onChange={(event) => setArrivalDate(event.target.value)} /></label>
               )}
               {foreignError && <p className="form-error" role="alert">{foreignError}</p>}
-              <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setArrivalAction(null)}>Voltar</button><button className="primary-button" type="submit">Confirmar</button></div>
+              <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setArrivalAction(null)}>Voltar</button><button className="primary-button" type="submit" disabled={submitting}>Confirmar</button></div>
             </form>
           </section>
         </div>
@@ -1877,7 +1937,7 @@ export default function Home() {
               <button className="close-button" type="button" onClick={() => setLogisticsForm(null)} aria-label="Fechar">×</button>
             </div>
             {logisticsForm === "exit" ? (
-              <form onSubmit={separateOrder}>
+              <form onSubmit={exclusive(separateOrder)}>
                 <label className="field"><span>Pedido empenhado pelo Comercial</span>
                   <select value={selectedLogisticsOrder?.id ?? ""} onChange={(event) => {
                     const order = openLogisticsOrders.find((candidate) => candidate.id === Number(event.target.value)) ?? null;
@@ -1900,10 +1960,10 @@ export default function Home() {
                   </fieldset>;
                 })}
                 {logisticsError && <p className="form-error" role="alert">{logisticsError}</p>}
-                <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setLogisticsForm(null)}>Cancelar</button><button className="primary-button" type="submit" disabled={!selectedLogisticsOrder}>Confirmar separação</button></div>
+                <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setLogisticsForm(null)}>Cancelar</button><button className="primary-button" type="submit" disabled={submitting || !selectedLogisticsOrder}>Confirmar separação</button></div>
               </form>
             ) : (
-              <form onSubmit={submitLogistics}>
+              <form onSubmit={exclusive(submitLogistics)}>
                 <label className="field"><span>Código do produto</span><select value={logisticsCode} onChange={(event) => { setLogisticsCode(event.target.value); setLogisticsError(""); }}>{items.map((item) => <option key={item.code} value={item.code}>{item.code} — {item.description} ({item.finish})</option>)}</select></label>
                 <div className="selected-stock"><div><span>Estoque GH</span><strong>{logisticsItem.gh}</strong></div><div><span>Empenhado</span><strong>{logisticsItem.ghCommitted}</strong></div><div><span>Disponível</span><strong>{Math.max(logisticsItem.gh - logisticsItem.ghCommitted, 0)}</strong></div></div>
                 <>
@@ -1911,16 +1971,16 @@ export default function Home() {
                   <label className="field"><span>Motivo do ajuste</span><textarea rows={4} value={adjustmentNote} onChange={(event) => { setAdjustmentNote(event.target.value); setLogisticsError(""); }} placeholder="Explique por que o saldo está sendo ajustado" /></label>
                 </>
                 {logisticsError && <p className="form-error" role="alert">{logisticsError}</p>}
-                <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setLogisticsForm(null)}>Cancelar</button><button className="primary-button" type="submit">Salvar ajuste</button></div>
+                <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setLogisticsForm(null)}>Cancelar</button><button className="primary-button" type="submit" disabled={submitting}>Salvar ajuste</button></div>
               </form>
             )}
           </section>
         </div>
       )}
 
-      {invoiceOrder && <div className="dialog-backdrop" role="presentation"><section className="commitment-dialog compact-dialog" role="dialog" aria-modal="true" aria-labelledby="invoice-title"><div className="dialog-heading"><div><h2 id="invoice-title">Baixa por NF · Pedido {invoiceOrder.order_number}</h2></div><button className="close-button" type="button" onClick={() => setInvoiceOrder(null)} aria-label="Fechar">×</button></div><form onSubmit={submitInvoice}><label className="field"><span>Número da nota fiscal</span><input autoFocus value={invoiceNumber} onChange={(event) => { setInvoiceNumber(event.target.value); setLogisticsError(""); }} /></label>{invoiceOrder.loan_items ? <p className="field-hint">Após a baixa, este pedido ficará aguardando a devolução de todos os itens.</p> : null}{logisticsError && <p className="form-error" role="alert">{logisticsError}</p>}<div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setInvoiceOrder(null)}>Cancelar</button><button className="primary-button" type="submit">Confirmar saída</button></div></form></section></div>}
+      {invoiceOrder && <div className="dialog-backdrop" role="presentation"><section className="commitment-dialog compact-dialog" role="dialog" aria-modal="true" aria-labelledby="invoice-title"><div className="dialog-heading"><div><h2 id="invoice-title">Baixa por NF · Pedido {invoiceOrder.order_number}</h2></div><button className="close-button" type="button" onClick={() => setInvoiceOrder(null)} aria-label="Fechar">×</button></div><form onSubmit={exclusive(submitInvoice)}><label className="field"><span>Número da nota fiscal</span><input autoFocus value={invoiceNumber} onChange={(event) => { setInvoiceNumber(event.target.value); setLogisticsError(""); }} /></label>{invoiceOrder.loan_items ? <p className="field-hint">Após a baixa, este pedido ficará aguardando a devolução de todos os itens.</p> : null}{logisticsError && <p className="form-error" role="alert">{logisticsError}</p>}<div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setInvoiceOrder(null)}>Cancelar</button><button className="primary-button" type="submit" disabled={submitting}>Confirmar saída</button></div></form></section></div>}
 
-      {returnOrder && <div className="dialog-backdrop" role="presentation"><section className="commitment-dialog" role="dialog" aria-modal="true" aria-labelledby="return-title"><div className="dialog-heading"><div><h2 id="return-title">Registrar devolução integral · Pedido {returnOrder.order_number}</h2></div><button className="close-button" type="button" onClick={() => setReturnOrder(null)} aria-label="Fechar">×</button></div><form onSubmit={submitReturn}><p className="dialog-copy">Todos os itens abaixo retornarão juntos ao Estoque Devolução.</p>{returnOrder.items.map((item) => { const position = returnPositions[item.id] ?? { street: "", column: "", level: "" }; return <fieldset className="return-item" key={item.id}><legend><strong>{item.code}</strong> · {item.quantity} unidades</legend><div className="allocation-fields"><label className="field"><span>Rua</span><input value={position.street} onChange={(event) => setReturnPositions((current) => ({ ...current, [item.id]: { ...position, street: event.target.value } }))} /></label><label className="field"><span>Coluna</span><input value={position.column} onChange={(event) => setReturnPositions((current) => ({ ...current, [item.id]: { ...position, column: event.target.value } }))} /></label><label className="field"><span>Nível</span><input value={position.level} onChange={(event) => setReturnPositions((current) => ({ ...current, [item.id]: { ...position, level: event.target.value } }))} /></label></div></fieldset>; })}{logisticsError && <p className="form-error" role="alert">{logisticsError}</p>}<div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setReturnOrder(null)}>Cancelar</button><button className="primary-button" type="submit">Confirmar devolução</button></div></form></section></div>}
+      {returnOrder && <div className="dialog-backdrop" role="presentation"><section className="commitment-dialog" role="dialog" aria-modal="true" aria-labelledby="return-title"><div className="dialog-heading"><div><h2 id="return-title">Registrar devolução integral · Pedido {returnOrder.order_number}</h2></div><button className="close-button" type="button" onClick={() => setReturnOrder(null)} aria-label="Fechar">×</button></div><form onSubmit={exclusive(submitReturn)}><p className="dialog-copy">Todos os itens abaixo retornarão juntos ao Estoque Devolução.</p>{returnOrder.items.map((item) => { const position = returnPositions[item.id] ?? { street: "", column: "", level: "" }; return <fieldset className="return-item" key={item.id}><legend><strong>{item.code}</strong> · {item.quantity} unidades</legend><div className="allocation-fields"><label className="field"><span>Rua</span><input value={position.street} onChange={(event) => setReturnPositions((current) => ({ ...current, [item.id]: { ...position, street: event.target.value } }))} /></label><label className="field"><span>Coluna</span><input value={position.column} onChange={(event) => setReturnPositions((current) => ({ ...current, [item.id]: { ...position, column: event.target.value } }))} /></label><label className="field"><span>Nível</span><input value={position.level} onChange={(event) => setReturnPositions((current) => ({ ...current, [item.id]: { ...position, level: event.target.value } }))} /></label></div></fieldset>; })}{logisticsError && <p className="form-error" role="alert">{logisticsError}</p>}<div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setReturnOrder(null)}>Cancelar</button><button className="primary-button" type="submit" disabled={submitting}>Confirmar devolução</button></div></form></section></div>}
 
       {allocationFormOpen && (
         <div className="dialog-backdrop" role="presentation">
@@ -1929,7 +1989,7 @@ export default function Home() {
               <div><h2 id="allocation-form-title">{activeAllocationTask ? "Alocar produtos" : "Editar produtos"}</h2></div>
               <button className="close-button" type="button" onClick={() => setAllocationFormOpen(false)} aria-label="Fechar">×</button>
             </div>
-            <form onSubmit={submitAllocation}>
+            <form onSubmit={exclusive(submitAllocation)}>
               {activeAllocationTask ? (
                 <div className="task-banner">
                   <div><span>Embarque</span><strong>{activeAllocationTask.shipment_identifier}</strong></div>
@@ -1955,7 +2015,7 @@ export default function Home() {
               </div>
               <label className="field"><span>Quantidade a alocar</span><input type="number" min="1" max={availableToAllocate} step="1" value={allocationQuantity} onChange={(event) => { setAllocationQuantity(event.target.value); setAllocationError(""); }} /></label>
               {allocationError && <p className="form-error" role="alert">{allocationError}</p>}
-              <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setAllocationFormOpen(false)}>Cancelar</button><button className="primary-button" type="submit">Confirmar alocação</button></div>
+              <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setAllocationFormOpen(false)}>Cancelar</button><button className="primary-button" type="submit" disabled={submitting}>Confirmar alocação</button></div>
             </form>
           </section>
         </div>
@@ -1978,7 +2038,7 @@ export default function Home() {
                 <div><h2 id="transfer-form-title">Transferir posição · {editingAllocation.code} ({editingAllocation.description})</h2></div>
                 <button className="close-button" type="button" onClick={() => setEditingAllocation(null)} aria-label="Fechar">×</button>
               </div>
-              <form onSubmit={submitTransfer}>
+              <form onSubmit={exclusive(submitTransfer)}>
                 <div className="selected-stock">
                   <div><span>Origem</span><strong>Rua {editingAllocation.street} · Col. {editingAllocation.column} · Nív. {editingAllocation.level}</strong></div>
                   <div><span>Saldo na posição</span><strong>{editingAllocation.quantity} un.</strong></div>
@@ -1997,7 +2057,7 @@ export default function Home() {
                   </div>
                 )}
                 {transferError && <p className="form-error" role="alert">{transferError}</p>}
-                <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setEditingAllocation(null)}>Cancelar</button><button className="primary-button" type="submit">Confirmar transferência</button></div>
+                <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setEditingAllocation(null)}>Cancelar</button><button className="primary-button" type="submit" disabled={submitting}>Confirmar transferência</button></div>
               </form>
             </section>
           </div>

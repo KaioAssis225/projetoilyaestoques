@@ -216,9 +216,19 @@ function logisticsData() {
     ...order,
     items: order.items.map((item: DemoRecord) => ({ ...item, ...pickProduct(item.code) })),
   })).sort((a, b) => b.id - a.id);
+  const exitSummary = new Map<string, DemoRecord>();
+  for (const event of state.logisticsEvents) {
+    if (event.type !== "exit") continue;
+    const current = exitSummary.get(event.code) ?? { code: event.code, quantity: 0, invoices: new Set<string>(), last_invoice: null };
+    current.quantity += Number(event.quantity);
+    current.invoices.add(String(event.invoice_number ?? event.id));
+    current.last_invoice = event.invoice_number ?? current.last_invoice;
+    exitSummary.set(event.code, current);
+  }
   return {
     inventory: state.inventory,
-    events: state.logisticsEvents.slice().reverse(),
+    events: state.logisticsEvents.slice().reverse().slice(0, 100),
+    exitSummary: [...exitSummary.values()].map(({ invoices, ...entry }) => ({ ...entry, count: invoices.size })),
     openOrders,
     logisticsOrders,
     returnAllocations: state.returnAllocations.map((position) => ({ ...position, ...pickProduct(position.code) })).reverse(),
@@ -297,23 +307,41 @@ async function commitmentsApi(url: URL, method: string, input: RequestInfo | URL
     return json({ documents: commitmentDocuments() });
   }
   const payload = await bodyOf(input, init);
+  const type = String(payload.type ?? "");
+  const note = String(payload.note ?? "").trim();
+  const orderNumber = String(payload.orderNumber ?? "").trim();
+  const rawItems = Array.isArray(payload.items) ? payload.items : [];
+  if (!["reservation", "order"].includes(type) || rawItems.length === 0 || (type === "reservation" && !note)) {
+    return json({ error: "Informe o tipo e pelo menos um item; reservas também exigem observação." }, 400);
+  }
+  if (type === "order" && !orderNumber) return json({ error: "O número do pedido é obrigatório." }, 400);
+  const normalized = rawItems.map((item: DemoRecord) => ({ code: String(item.code ?? ""), quantity: Number(item.quantity) }));
+  if (normalized.some((item: DemoRecord) => !item.code || !Number.isInteger(item.quantity) || item.quantity <= 0)) {
+    return json({ error: "Todos os itens precisam de produto e quantidade inteira positiva." }, 400);
+  }
   const grouped = new Map<string, number>();
-  for (const item of payload.items ?? []) grouped.set(item.code, (grouped.get(item.code) ?? 0) + Number(item.quantity));
+  for (const item of normalized) grouped.set(item.code, (grouped.get(item.code) ?? 0) + item.quantity);
   for (const [code, requested] of grouped) {
     const stock = inventoryItem(code);
+    if (!stock) return json({ error: `Produto ${code} inválido.` }, 400);
     const committed = state.commitments.flatMap((document) => document.items).filter((item) => item.code === code).reduce((sum, item) => sum + item.quantity, 0);
-    if (!stock || requested > stock.gh - committed) return json({ error: `${code}: quantidade maior que o disponível.` }, 400);
+    const available = Math.max(stock.gh - committed, 0);
+    if (requested > available) return json({ error: `${code}: solicitado ${requested}, mas há ${available} unidades disponíveis no Estoque GH.` }, 400);
   }
+  // Mesmo critério do D1: próximo número após o maior código R existente.
+  const lastReservation = state.commitments
+    .map((document) => /^R(\d+)$/.exec(String(document.reservation_code ?? ""))?.[1])
+    .reduce((max, value) => Math.max(max, Number(value ?? 0)), 0);
   const id = next("commitment");
   state.commitments.push({
     id,
-    type: payload.type,
-    reservation_code: payload.type === "reservation" ? `R${String(id).padStart(3, "0")}` : null,
-    order_number: payload.type === "order" ? String(payload.orderNumber) : null,
-    note: String(payload.note ?? ""),
-    loan_items: payload.loanItems ? 1 : 0,
+    type,
+    reservation_code: type === "reservation" ? `R${String(lastReservation + 1).padStart(3, "0")}` : null,
+    order_number: type === "order" ? orderNumber : null,
+    note,
+    loan_items: type === "order" && payload.loanItems === true ? 1 : 0,
     created_at: now(),
-    items: (payload.items ?? []).map((item: DemoRecord) => ({ id: next("commitmentItem"), code: item.code, quantity: Number(item.quantity) })),
+    items: normalized.map((item: DemoRecord) => ({ id: next("commitmentItem"), code: item.code, quantity: item.quantity })),
   });
   save();
   return json({ documents: commitmentDocuments() }, 201);
@@ -465,7 +493,7 @@ async function foreignApi(method: string, input: RequestInfo | URL, init?: Reque
         shipment.stage = "port";
         shipment.due_date = ghDueDate;
       }
-    } else {
+    } else if (stage === "port") {
       for (const shipment of matching) {
         const stock = inventoryItem(shipment.code)!;
         stock.port -= shipment.quantity;
@@ -482,6 +510,8 @@ async function foreignApi(method: string, input: RequestInfo | URL, init?: Reque
           created_at: now(),
         });
       }
+    } else {
+      return json({ error: "Etapa de embarque inválida." }, 409);
     }
   } else {
     return json({ error: "Ação inválida." }, 400);
@@ -588,38 +618,50 @@ async function allocationsApi(method: string, input: RequestInfo | URL, init?: R
     save();
     return json(allocationsData());
   }
-  const item = inventoryItem(String(payload.code));
   const quantity = Number(payload.quantity);
-  const allocated = state.allocations.filter((entry) => entry.code === payload.code).reduce((sum, entry) => sum + entry.quantity, 0);
   const requestedTaskId = Number(payload.taskId);
-  if (!item || !Number.isInteger(quantity) || quantity <= 0) {
-    return json({ error: "Informe produto e quantidade válida para alocação." }, 400);
-  }
-
-  let targetCode = String(payload.code);
-  let shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim() || null;
-
-  if (Number.isInteger(requestedTaskId) && requestedTaskId > 0) {
-    const task = state.allocationTasks.find((entry) => entry.id === requestedTaskId && entry.status === "pending");
-    if (!task) return json({ error: "Embarque pendente não encontrado." }, 404);
-    const taskRemaining = Math.max(task.quantity - task.allocated_quantity, 0);
-    if (quantity > taskRemaining) {
-      return json({ error: `Quantidade maior que o saldo deste embarque (${resolveTaskShipmentIdentifier(task)}). Restam ${taskRemaining} unidades.` }, 400);
-    }
-    targetCode = task.code;
-    shipmentIdentifier = resolveTaskShipmentIdentifier(task);
-    task.allocated_quantity += quantity;
-    if (task.allocated_quantity >= task.quantity) task.status = "completed";
-  } else {
-    const available = Math.max(item.gh - allocated, 0);
-    if (quantity > available) {
-      return json({ error: `Quantidade maior que a disponível para alocação. Restam ${available} unidades.` }, 400);
-    }
-  }
-
   const street = String(payload.street ?? "").trim();
   const column = String(payload.column ?? "").trim();
   const level = String(payload.level ?? "").trim();
+  if (!street || !column || !level || !Number.isInteger(quantity) || quantity <= 0) {
+    return json({ error: "Produto, rua, coluna, nível e quantidade são obrigatórios." }, 400);
+  }
+
+  let targetCode = String(payload.code ?? "").trim().toUpperCase();
+  let shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim() || null;
+  const task = Number.isInteger(requestedTaskId) && requestedTaskId > 0
+    ? state.allocationTasks.find((entry) => entry.id === requestedTaskId && entry.status === "pending")
+    : null;
+  if (Number.isInteger(requestedTaskId) && requestedTaskId > 0 && !task) return json({ error: "Embarque pendente não encontrado." }, 404);
+  if (task) {
+    targetCode = task.code;
+    shipmentIdentifier = resolveTaskShipmentIdentifier(task);
+  }
+
+  const item = inventoryItem(targetCode);
+  if (!item) return json({ error: "Código de produto inválido." }, 400);
+  const allocated = state.allocations.filter((entry) => entry.code === targetCode).reduce((sum, entry) => sum + entry.quantity, 0);
+  const pendingTaskTotal = state.allocationTasks
+    .filter((entry) => entry.code === targetCode && entry.status === "pending")
+    .reduce((sum, entry) => sum + Math.max(entry.quantity - entry.allocated_quantity, 0), 0);
+
+  if (task) {
+    const taskRemaining = Math.max(task.quantity - task.allocated_quantity, 0);
+    if (quantity > taskRemaining) {
+      return json({ error: `Quantidade maior que o saldo deste embarque (${shipmentIdentifier}). Restam ${taskRemaining} unidades.` }, 400);
+    }
+    if (allocated + quantity > item.gh) {
+      return json({ error: `O Estoque GH de ${targetCode} tem ${item.gh} unidades e ${allocated} já estão alocadas. Revise o ajuste de estoque antes de alocar este embarque.` }, 409);
+    }
+    task.allocated_quantity += quantity;
+    if (task.allocated_quantity >= task.quantity) task.status = "completed";
+  } else {
+    const available = Math.max(item.gh - allocated - pendingTaskTotal, 0);
+    if (quantity > available) {
+      return json({ error: `Quantidade maior que a disponível para alocação avulsa. Restam ${available} unidades (${pendingTaskTotal} reservadas para embarques aguardando alocação).` }, 400);
+    }
+  }
+
   const existingPosition = state.allocations.find((entry) =>
     entry.code === targetCode
     && String(entry.street).toLowerCase() === street.toLowerCase()
@@ -641,9 +683,6 @@ async function allocationsApi(method: string, input: RequestInfo | URL, init?: R
       created_at: now(),
     });
   }
-  if (item.gh < allocated + quantity) {
-    item.gh = allocated + quantity;
-  }
   save();
   return json(allocationsData());
 }
@@ -653,36 +692,70 @@ async function logisticsApi(method: string, input: RequestInfo | URL, init?: Req
   const payload = await bodyOf(input, init);
   if (payload.action === "adjustment") {
     const item = inventoryItem(String(payload.code));
-    if (!item) return json({ error: "Produto inválido." }, 400);
+    const newQuantity = Number(payload.newQuantity);
+    const note = String(payload.note ?? "").trim();
+    if (!item || !Number.isInteger(newQuantity) || newQuantity < 0 || !note) return json({ error: "Informe produto, nova quantidade e motivo do ajuste." }, 400);
+    const allocated = state.allocations.filter((entry) => entry.code === item.code).reduce((sum, entry) => sum + entry.quantity, 0);
+    const committed = state.commitments.flatMap((document) => document.items).filter((entry: DemoRecord) => entry.code === item.code).reduce((sum: number, entry: DemoRecord) => sum + entry.quantity, 0);
+    if (newQuantity < allocated || newQuantity < committed) {
+      return json({ error: `O Estoque GH não pode ficar abaixo de ${Math.max(allocated, committed)} unidades (${allocated} alocadas, ${committed} empenhadas).` }, 400);
+    }
     const previous = item.gh;
-    item.gh = Number(payload.newQuantity); item.updated_at = now();
-    state.logisticsEvents.push({ id: next("logisticsEvent"), type: "adjustment", code: item.code, quantity: item.gh - previous, previous_quantity: previous, new_quantity: item.gh, note: payload.note, created_at: now() });
+    item.gh = newQuantity; item.updated_at = now();
+    state.logisticsEvents.push({ id: next("logisticsEvent"), type: "adjustment", code: item.code, quantity: item.gh - previous, previous_quantity: previous, new_quantity: item.gh, note, created_at: now() });
   } else if (payload.action === "separate_order") {
     const document = state.commitments.find((entry) => entry.id === Number(payload.documentId) && entry.type === "order");
     if (!document) return json({ error: "Pedido não encontrado ou já separado." }, 400);
-    const items = [];
+    // 1ª fase: valida tudo sem alterar o estado (antes, um erro no 2º item deixava o 1º já baixado).
+    const usedByAllocation = new Map<number, number>();
+    const planned: Array<{ line: DemoRecord; sources: Array<{ position: DemoRecord; quantity: number }> }> = [];
     for (const line of document.items) {
-      const selections = (payload.selections ?? []).filter((entry: DemoRecord) => Number(entry.itemId) === line.id);
-      if (selections.reduce((sum: number, entry: DemoRecord) => sum + Number(entry.quantity), 0) !== line.quantity) return json({ error: `${line.code}: distribua exatamente ${line.quantity} unidades.` }, 400);
+      const selections = (payload.selections ?? [])
+        .filter((entry: DemoRecord) => Number(entry.itemId) === line.id)
+        .map((entry: DemoRecord) => ({ allocationId: Number(entry.allocationId), quantity: Number(entry.quantity) }));
+      const invalid = !selections.length
+        || selections.some((entry: DemoRecord) => !Number.isInteger(entry.allocationId) || entry.allocationId <= 0 || !Number.isInteger(entry.quantity) || entry.quantity <= 0)
+        || selections.reduce((sum: number, entry: DemoRecord) => sum + entry.quantity, 0) !== line.quantity;
+      if (invalid) return json({ error: `${line.code}: distribua exatamente ${line.quantity} unidades entre as posições.` }, 400);
       const sources = [];
       for (const selection of selections) {
-        const position = state.allocations.find((entry) => entry.id === Number(selection.allocationId) && entry.code === line.code);
-        const quantity = Number(selection.quantity);
-        if (!position || quantity > position.quantity) return json({ error: `${line.code}: posição sem saldo suficiente.` }, 400);
-        sources.push({ id: next("logisticsItem"), street: position.street, column: position.column, level: position.level, quantity });
-        position.quantity -= quantity;
+        const position = state.allocations.find((entry) => entry.id === selection.allocationId && entry.code === line.code);
+        const accumulated = (usedByAllocation.get(selection.allocationId) ?? 0) + selection.quantity;
+        if (!position || accumulated > position.quantity) return json({ error: `${line.code}: uma das posições não possui saldo suficiente.` }, 400);
+        usedByAllocation.set(selection.allocationId, accumulated);
+        sources.push({ position, quantity: selection.quantity });
       }
-      state.allocations = state.allocations.filter((position) => position.quantity > 0);
+      planned.push({ line, sources });
+    }
+    // 2ª fase: aplica.
+    const items = planned.map(({ line, sources }) => {
       const stock = inventoryItem(line.code);
       if (stock) { stock.gh -= line.quantity; stock.updated_at = now(); }
-      items.push({ id: next("logisticsItem"), code: line.code, quantity: line.quantity, sources });
-    }
+      for (const source of sources) source.position.quantity -= source.quantity;
+      return {
+        id: next("logisticsItem"),
+        code: line.code,
+        quantity: line.quantity,
+        sources: sources.map((source) => ({ id: next("logisticsSource"), allocation_id: source.position.id, street: source.position.street, column: source.position.column, level: source.position.level, quantity: source.quantity })),
+      };
+    });
+    state.allocations = state.allocations.filter((position) => position.quantity > 0);
     state.logisticsOrders.push({ id: next("logisticsOrder"), order_number: document.order_number, loan_items: document.loan_items, status: "awaiting_invoice", invoice_number: null, separated_at: now(), departed_at: null, returned_at: null, items });
     state.commitments = state.commitments.filter((entry) => entry.id !== document.id);
   } else if (payload.action === "invoice") {
+    const invoiceNumber = String(payload.invoiceNumber ?? "").trim();
+    if (!invoiceNumber) return json({ error: "Informe a nota fiscal." }, 400);
     const order = state.logisticsOrders.find((entry) => entry.id === Number(payload.orderId));
-    if (!order) return json({ error: "Pedido não encontrado." }, 400);
-    order.invoice_number = payload.invoiceNumber; order.departed_at = now(); order.status = order.loan_items ? "awaiting_return" : "completed";
+    if (!order || order.status !== "awaiting_invoice") return json({ error: "Este pedido não está aguardando nota fiscal." }, 400);
+    order.invoice_number = invoiceNumber; order.departed_at = now(); order.status = order.loan_items ? "awaiting_return" : "completed";
+    // Uma saída por posição de origem, como no D1: alimenta o histórico e o Dashboard Saída.
+    const note = order.loan_items ? "Itens de empréstimo" : "";
+    for (const line of order.items) {
+      const sources = line.sources?.length ? line.sources : [{ street: null, column: null, level: null, quantity: line.quantity }];
+      for (const source of sources) {
+        state.logisticsEvents.push({ id: next("logisticsEvent"), type: "exit", code: line.code, quantity: source.quantity, previous_quantity: null, new_quantity: null, invoice_number: invoiceNumber, order_number: order.order_number, street: source.street, column: source.column, level: source.level, note, created_at: now() });
+      }
+    }
   } else if (payload.action === "return_order") {
     const order = state.logisticsOrders.find((entry) => entry.id === Number(payload.orderId) && entry.status === "awaiting_return");
     if (!order) return json({ error: "Pedido não está aguardando devolução." }, 400);

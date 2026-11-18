@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { ensureStockGuards, runGuardedBatch } from "../../../lib/stock-guards";
 
 async function ensureTables() {
   await env.DB.batch([
@@ -20,12 +21,17 @@ async function ensureTables() {
       street TEXT NOT NULL, "column" TEXT NOT NULL, level TEXT NOT NULL, quantity INTEGER NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
   ]);
+  await ensureStockGuards();
 }
 
 async function readData() {
-  const [inventory, events, openRows, processRows, sources, returns] = await Promise.all([
+  const [inventory, events, exitSummary, openRows, processRows, sources, returns] = await Promise.all([
     env.DB.prepare("SELECT * FROM inventory ORDER BY code").all(),
     env.DB.prepare("SELECT * FROM logistics_events ORDER BY id DESC LIMIT 100").all(),
+    // Total acumulado de saídas por produto (o histórico acima traz só os 100 últimos eventos).
+    env.DB.prepare(`SELECT e.code, SUM(e.quantity) AS quantity, COUNT(DISTINCT COALESCE(e.invoice_number, e.id)) AS count,
+      (SELECT last.invoice_number FROM logistics_events last WHERE last.type = 'exit' AND last.code = e.code ORDER BY last.id DESC LIMIT 1) AS last_invoice
+      FROM logistics_events e WHERE e.type = 'exit' GROUP BY e.code`).all(),
     env.DB.prepare(`SELECT d.id, d.order_number, d.loan_items, d.created_at, li.id AS item_id, li.code, li.quantity,
       i.description, i.finish FROM commitment_documents d JOIN commitment_document_items li ON li.document_id = d.id
       JOIN inventory i ON i.code = li.code WHERE d.type = 'order' ORDER BY d.id DESC, li.id`).all<Record<string, unknown>>(),
@@ -53,7 +59,7 @@ async function readData() {
     }
     return [...map.values()];
   };
-  return { inventory: inventory.results, events: events.results, openOrders: group(openRows.results, false), logisticsOrders: group(processRows.results, true), returnAllocations: returns.results };
+  return { inventory: inventory.results, events: events.results, exitSummary: exitSummary.results, openOrders: group(openRows.results, false), logisticsOrders: group(processRows.results, true), returnAllocations: returns.results };
 }
 
 function positiveInteger(value: unknown) {
@@ -105,9 +111,9 @@ export async function POST(request: Request) {
         .bind(orderInsert.meta.last_row_id, entry.item.code, entry.item.quantity).run();
       statements.push(env.DB.prepare("UPDATE inventory SET gh = gh - ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?").bind(entry.item.quantity, entry.item.code));
       for (const source of entry.sources) {
-        statements.push(source.quantity === source.allocation.quantity
-          ? env.DB.prepare("DELETE FROM allocations WHERE id = ?").bind(source.allocation.id)
-          : env.DB.prepare("UPDATE allocations SET quantity = quantity - ? WHERE id = ?").bind(source.quantity, source.allocation.id));
+        // Decrementa sempre (o trigger impede saldo negativo); a posição só é apagada se zerar de fato.
+        statements.push(env.DB.prepare("UPDATE allocations SET quantity = quantity - ? WHERE id = ?").bind(source.quantity, source.allocation.id));
+        statements.push(env.DB.prepare("DELETE FROM allocations WHERE id = ? AND quantity = 0").bind(source.allocation.id));
         statements.push(env.DB.prepare(`INSERT INTO logistics_order_sources
           (logistics_order_item_id, allocation_id, street, "column", level, quantity) VALUES (?, ?, ?, ?, ?, ?)`)
           .bind(inserted.meta.last_row_id, source.allocation.id, source.allocation.street, source.allocation.column, source.allocation.level, source.quantity));
@@ -115,15 +121,40 @@ export async function POST(request: Request) {
     }
     statements.push(env.DB.prepare("DELETE FROM commitment_document_items WHERE document_id = ?").bind(document.id));
     statements.push(env.DB.prepare("DELETE FROM commitment_documents WHERE id = ?").bind(document.id));
-    await env.DB.batch(statements);
+    const errorResponse = await runGuardedBatch(statements);
+    if (errorResponse) {
+      // Desfaz o cabeçalho gravado antes do lote para o pedido poder ser separado de novo.
+      await env.DB.batch([
+        env.DB.prepare("DELETE FROM logistics_order_items WHERE logistics_order_id = ?").bind(orderInsert.meta.last_row_id),
+        env.DB.prepare("DELETE FROM logistics_orders WHERE id = ?").bind(orderInsert.meta.last_row_id),
+      ]);
+      return errorResponse;
+    }
   } else if (action === "invoice") {
     const orderId = positiveInteger(payload.orderId);
     const invoiceNumber = String(payload.invoiceNumber ?? "").trim();
     if (!orderId || !invoiceNumber) return Response.json({ error: "Informe a nota fiscal." }, { status: 400 });
     const order = await env.DB.prepare("SELECT loan_items, status FROM logistics_orders WHERE id = ?").bind(orderId).first<{ loan_items: number; status: string }>();
     if (!order || order.status !== "awaiting_invoice") return Response.json({ error: "Este pedido não está aguardando nota fiscal." }, { status: 400 });
-    await env.DB.prepare(`UPDATE logistics_orders SET invoice_number = ?, departed_at = CURRENT_TIMESTAMP,
-      status = ? WHERE id = ?`).bind(invoiceNumber, order.loan_items ? "awaiting_return" : "completed", orderId).run();
+    // A baixa por NF registra uma saída por posição de origem; é isso que alimenta o histórico e o Dashboard Saída.
+    const errorResponse = await runGuardedBatch([
+      env.DB.prepare(`UPDATE logistics_orders SET invoice_number = ?, departed_at = CURRENT_TIMESTAMP,
+        status = ? WHERE id = ?`).bind(invoiceNumber, order.loan_items ? "awaiting_return" : "completed", orderId),
+      env.DB.prepare(`INSERT INTO logistics_events (type, code, quantity, invoice_number, order_number, street, "column", level, note)
+        SELECT 'exit', oi.code, s.quantity, ?, o.order_number, s.street, s."column", s.level,
+          CASE WHEN o.loan_items = 1 THEN 'Itens de empréstimo' ELSE '' END
+        FROM logistics_orders o
+        JOIN logistics_order_items oi ON oi.logistics_order_id = o.id
+        JOIN logistics_order_sources s ON s.logistics_order_item_id = oi.id
+        WHERE o.id = ? ORDER BY oi.id, s.id`).bind(invoiceNumber, orderId),
+      env.DB.prepare(`INSERT INTO logistics_events (type, code, quantity, invoice_number, order_number, note)
+        SELECT 'exit', oi.code, oi.quantity, ?, o.order_number,
+          CASE WHEN o.loan_items = 1 THEN 'Itens de empréstimo' ELSE '' END
+        FROM logistics_orders o
+        JOIN logistics_order_items oi ON oi.logistics_order_id = o.id
+        WHERE o.id = ? AND NOT EXISTS (SELECT 1 FROM logistics_order_sources s WHERE s.logistics_order_item_id = oi.id)`).bind(invoiceNumber, orderId),
+    ]);
+    if (errorResponse) return errorResponse;
   } else if (action === "return_order") {
     const orderId = positiveInteger(payload.orderId);
     const positions = Array.isArray(payload.positions) ? payload.positions as Array<Record<string, unknown>> : [];
@@ -139,14 +170,25 @@ export async function POST(request: Request) {
       statements.push(env.DB.prepare(`INSERT INTO return_allocations (logistics_order_item_id, code, street, "column", level, quantity)
         VALUES (?, ?, ?, ?, ?, ?)`).bind(item.id, item.code, street, column, level, item.quantity));
     }
-    statements.push(env.DB.prepare("UPDATE logistics_orders SET status = 'returned', returned_at = CURRENT_TIMESTAMP WHERE id = ?").bind(orderId));
-    await env.DB.batch(statements);
+    // O status vai primeiro: numa segunda confirmação o trigger aborta o lote e a devolução não é somada duas vezes.
+    statements.unshift(env.DB.prepare("UPDATE logistics_orders SET status = 'returned', returned_at = CURRENT_TIMESTAMP WHERE id = ?").bind(orderId));
+    const errorResponse = await runGuardedBatch(statements);
+    if (errorResponse) return errorResponse;
   } else if (action === "adjustment") {
     const code = String(payload.code ?? "");
     const newQuantity = Number(payload.newQuantity);
     const note = String(payload.note ?? "").trim();
     const item = await env.DB.prepare("SELECT gh FROM inventory WHERE code = ?").bind(code).first<{ gh: number }>();
     if (!item || !Number.isInteger(newQuantity) || newQuantity < 0 || !note) return Response.json({ error: "Informe produto, nova quantidade e motivo do ajuste." }, { status: 400 });
+    const [allocated, committed] = await Promise.all([
+      env.DB.prepare("SELECT COALESCE(SUM(quantity), 0) AS total FROM allocations WHERE code = ?").bind(code).first<{ total: number }>(),
+      env.DB.prepare("SELECT COALESCE(SUM(quantity), 0) AS total FROM commitment_document_items WHERE code = ?").bind(code).first<{ total: number }>(),
+    ]);
+    const allocatedTotal = Number(allocated?.total ?? 0);
+    const committedTotal = Number(committed?.total ?? 0);
+    if (newQuantity < allocatedTotal || newQuantity < committedTotal) {
+      return Response.json({ error: `O Estoque GH não pode ficar abaixo de ${Math.max(allocatedTotal, committedTotal)} unidades (${allocatedTotal} alocadas, ${committedTotal} empenhadas).` }, { status: 400 });
+    }
     await env.DB.batch([
       env.DB.prepare("UPDATE inventory SET gh = ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?").bind(newQuantity, code),
       env.DB.prepare(`INSERT INTO logistics_events (type, code, quantity, previous_quantity, new_quantity, note)

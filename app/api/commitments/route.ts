@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { ensureStockGuards, runGuardedBatch } from "../../../lib/stock-guards";
 
 async function ensureTables() {
   await env.DB.batch([
@@ -36,6 +37,7 @@ async function ensureTables() {
         .bind(result.meta.last_row_id, row.code, row.quantity).run();
     }
   }
+  await ensureStockGuards();
 }
 
 async function nextReservationCode() {
@@ -99,9 +101,14 @@ export async function POST(request: Request) {
   const result = await env.DB.prepare(`INSERT INTO commitment_documents
     (type, reservation_code, order_number, note, loan_items) VALUES (?, ?, ?, ?, ?)`)
     .bind(type, reservationCode, type === "order" ? orderNumber : null, note, loanItems ? 1 : 0).run();
-  await env.DB.batch(normalized.map((item) => env.DB.prepare(
+  // O trigger guard_commitments_within_gh aborta o lote se outro empenho consumiu o saldo nesse meio tempo.
+  const errorResponse = await runGuardedBatch(normalized.map((item) => env.DB.prepare(
     "INSERT INTO commitment_document_items (document_id, code, quantity) VALUES (?, ?, ?)"
   ).bind(result.meta.last_row_id, item.code, item.quantity)));
+  if (errorResponse) {
+    await env.DB.prepare("DELETE FROM commitment_documents WHERE id = ?").bind(result.meta.last_row_id).run();
+    return errorResponse;
+  }
   return Response.json({ documents: await readDocuments() }, { status: 201 });
 }
 

@@ -27,6 +27,14 @@ type LogisticsEventItem = {
   created_at: string;
 };
 
+/** Total acumulado de saídas por produto, calculado pela API sobre todos os eventos (não só os 100 últimos). */
+export type ExitSummaryItem = {
+  code: string;
+  quantity: number;
+  count: number;
+  last_invoice: string | null;
+};
+
 type PriceReference = {
   code: string;
   label: string;
@@ -89,9 +97,13 @@ const unitMoney = new Intl.NumberFormat("pt-BR", { style: "currency", currency: 
 export default function ValuationDashboard({
   items,
   logisticsEvents = [],
+  exitSummary,
+  syncedLabel = "Carregando saldos…",
 }: {
   items: InventoryItem[];
   logisticsEvents?: LogisticsEventItem[];
+  exitSummary?: ExitSummaryItem[];
+  syncedLabel?: string;
 }) {
   const [dashboardTab, setDashboardTab] = useState<DashboardView>("gh");
   const [productFilter, setProductFilter] = useState("all");
@@ -99,6 +111,12 @@ export default function ValuationDashboard({
 
   const exitStatsByCode = useMemo(() => {
     const map = new Map<string, { quantity: number; count: number; lastInvoice: string | null }>();
+    if (exitSummary?.length) {
+      for (const entry of exitSummary) {
+        map.set(entry.code, { quantity: Number(entry.quantity), count: Number(entry.count), lastInvoice: entry.last_invoice });
+      }
+      return map;
+    }
     for (const event of logisticsEvents) {
       if (event.type !== "exit") continue;
       const current = map.get(event.code) ?? { quantity: 0, count: 0, lastInvoice: null };
@@ -110,9 +128,10 @@ export default function ValuationDashboard({
       map.set(event.code, current);
     }
     return map;
-  }, [logisticsEvents]);
+  }, [logisticsEvents, exitSummary]);
 
   const products = useMemo(() => items.map((inventory) => {
+    const genericPrice = !priceReferences[inventory.code];
     const reference = priceReferences[inventory.code] ?? {
       label: inventory.description,
       costNet: 120,
@@ -142,6 +161,7 @@ export default function ValuationDashboard({
 
     return {
       code: inventory.code,
+      genericPrice,
       ...reference,
       ghAvailable,
       returns,
@@ -161,7 +181,17 @@ export default function ValuationDashboard({
   }), [items, exitStatsByCode]);
 
   const activeConfig = dashboardTabs.find((tab) => tab.key === dashboardTab) ?? dashboardTabs[0];
-  const visibleProducts = productFilter === "all" ? products : products.filter((product) => product.code === productFilter);
+  // Produtos sem unidades nesta visão não entram no ranking, na contagem de SKUs nem no filtro.
+  const activeProducts = products.filter((product) => product.quantity > 0);
+  const filterOptions = productFilter === "all" || activeProducts.some((product) => product.code === productFilter)
+    ? activeProducts
+    : [...activeProducts, ...products.filter((product) => product.code === productFilter)];
+  const visibleProducts = productFilter === "all" ? activeProducts : products.filter((product) => product.code === productFilter);
+  const emptyMessage: Record<DashboardView, { title: string; hint: string }> = {
+    gh: { title: "Nenhuma unidade disponível no Estoque GH", hint: "O saldo aparece aqui quando um embarque chega ao GH ou uma devolução é registrada." },
+    china: { title: "Nenhuma unidade no Estoque China", hint: "O saldo aparece aqui quando um pedido de compra deixa itens retidos no armazém da China." },
+    exit: { title: "Nenhuma saída registrada", hint: "As baixas por NF feitas na Logística aparecem aqui." },
+  };
   const selectedUnits = visibleProducts.reduce((sum, product) => sum + product.quantity, 0);
   const totals = Object.fromEntries(valueOptions.map(({ key }) => [
     key,
@@ -198,7 +228,7 @@ export default function ValuationDashboard({
               </button>
             ))}
           </div>
-          <span className="updated"><span className="status-dot" aria-hidden="true" />Atualizado em tempo real</span>
+          <span className="updated"><span className="status-dot" aria-hidden="true" />{syncedLabel}</span>
         </div>
       </div>
 
@@ -207,15 +237,20 @@ export default function ValuationDashboard({
           <span>Produto</span>
           <select value={productFilter} onChange={(event) => setProductFilter(event.target.value)}>
             <option value="all">Todos os produtos</option>
-            {products.map((product) => (
+            {filterOptions.map((product) => (
               <option key={product.code} value={product.code}>{product.code} · {product.label}</option>
             ))}
           </select>
         </label>
-        <div><span>SKUs ativos</span><strong>{visibleProducts.length}</strong></div>
+        <div><span>SKUs com saldo</span><strong>{visibleProducts.filter((product) => product.quantity > 0).length}</strong></div>
         <div><span>Unidades consideradas</span><strong>{selectedUnits}</strong></div>
         {productFilter !== "all" && <button type="button" onClick={() => setProductFilter("all")}>Limpar filtro</button>}
       </section>
+
+      <p className="valuation-notice" role="note">
+        <span className="valuation-notice-tag">Preços provisórios</span>
+        Os valores usam uma tabela de preços fixa no sistema, não o custo real de cada embarque. Use para ordem de grandeza até o cadastro de preços existir.
+      </p>
 
       <section className="valuation-metrics" aria-label="Resumo de valorização">
         {valueOptions.map((option) => (
@@ -243,6 +278,12 @@ export default function ValuationDashboard({
           </label>
         </header>
         <div className="valuation-ranking-list">
+          {ranking.length === 0 && (
+            <div className="empty-state" role="status">
+              <strong>{emptyMessage[dashboardTab].title}</strong>
+              <p>{emptyMessage[dashboardTab].hint}</p>
+            </div>
+          )}
           {ranking.map((product, index) => {
             const total = product.quantity * product[rankingBy];
             const ratio = Math.min(Math.max(total / maxRanking, 0), 1);
@@ -260,7 +301,7 @@ export default function ValuationDashboard({
                 </div>
                 <div className="valuation-total">
                   <strong>{money.format(total)}</strong>
-                  <span>{unitMoney.format(product[rankingBy])} / un.</span>
+                  <span>{unitMoney.format(product[rankingBy])} / un.{product.genericPrice ? " · preço genérico" : ""}</span>
                 </div>
               </div>
             );
