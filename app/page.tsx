@@ -246,6 +246,15 @@ function NavIcon({ name }: { name: "stock" | "dashboard" | "commercial" | "forei
   }
 }
 
+const sectionLabels: Record<"stock" | "dashboard" | "commercial" | "foreign" | "logistics" | "allocation", string> = {
+  stock: "Estoque",
+  dashboard: "Dashboard",
+  commercial: "Comercial",
+  foreign: "Comércio Exterior",
+  logistics: "Logística",
+  allocation: "Alocação",
+};
+
 function hasAnyStock(item: StockItem) {
   return item.china + item.transit + item.port + item.gh + item.returns + item.ghCommitted > 0;
 }
@@ -295,6 +304,7 @@ export default function Home() {
   const [exitSummary, setExitSummary] = useState<ExitSummaryItem[]>([]);
   // Uma operação por vez: o React aplica o `disabled` dos botões antes de tratar o próximo clique.
   const [submitting, setSubmitting] = useState(false);
+  const [toast, setToast] = useState<{ id: number; message: string } | null>(null);
   const [openLogisticsOrders, setOpenLogisticsOrders] = useState<LogisticsOrder[]>([]);
   const [logisticsOrders, setLogisticsOrders] = useState<LogisticsOrder[]>([]);
   const [returnAllocations, setReturnAllocations] = useState<ReturnAllocation[]>([]);
@@ -328,6 +338,11 @@ export default function Home() {
   const [allocationError, setAllocationError] = useState("");
   const [allocationSort, setAllocationSort] = useState<"asc" | "desc">("asc");
   const [allocationView, setAllocationView] = useState<"gh" | "returns">("gh");
+
+  function notify(message: string) {
+    // O id novo remonta o aviso (e reinicia a animação) quando um substitui outro.
+    setToast((current) => ({ id: (current?.id ?? 0) + 1, message }));
+  }
 
   async function runExclusive(task: () => Promise<void>) {
     if (submitting) return;
@@ -501,6 +516,17 @@ export default function Home() {
   }
 
   useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 4500);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  useEffect(() => {
+    // No celular a navegação vira uma faixa com rolagem lateral: mantém a área ativa à vista.
+    document.querySelector(".sidebar .nav-item.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeSection]);
+
+  useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
       setCommitmentChoiceOpen(false);
@@ -583,6 +609,10 @@ export default function Home() {
         ghCommitted: saved.flatMap((document) => document.items).filter((entry) => entry.code === item.code).reduce((total, entry) => total + entry.quantity, 0),
       })));
       setFormOpen(false);
+      const created = saved[0];
+      notify(created?.type === "reservation"
+        ? `Reserva ${created.reservation_code} criada.`
+        : `Pedido nº ${created?.order_number ?? commitmentOrderNumber} empenhado.`);
       await refreshLogistics();
     } catch (error) {
       setFormError(error instanceof Error ? error.message : "Não foi possível criar o empenho.");
@@ -601,6 +631,7 @@ export default function Home() {
         ...item,
         ghCommitted: saved.flatMap((document) => document.items).filter((entry) => entry.code === item.code).reduce((total, entry) => total + entry.quantity, 0),
       })));
+      notify(`${commitmentToCancel.type === "reservation" ? commitmentToCancel.reservation_code : `Pedido nº ${commitmentToCancel.order_number}`} cancelado. O saldo voltou ao Estoque GH.`);
       setCommitmentToCancel(null);
       setFormError("");
     } catch (error) {
@@ -769,6 +800,9 @@ export default function Home() {
           })),
         });
       }
+      notify(foreignForm === "purchase"
+        ? `Embarque ${foreignShipmentIdentifier.trim()} registrado.`
+        : `Retirada ${foreignShipmentIdentifier.trim()} enviada para trânsito.`);
       setForeignForm(null);
       setImportedSheetNotice("");
       setForeignError("");
@@ -788,6 +822,12 @@ export default function Home() {
         shipmentId: arrivalAction.shipment.items[0]?.shipment_id,
         dueDate: arrivalDate,
       });
+      const { shipment, type } = arrivalAction;
+      notify(type === "delayed"
+        ? `Nova previsão registrada para ${shipment.shipment_identifier}.`
+        : shipment.stage === "transit"
+          ? `${shipment.shipment_identifier} chegou ao Porto.`
+          : `${shipment.shipment_identifier} recebido no Estoque GH. Já está na fila de Alocação.`);
       setArrivalAction(null);
       setForeignError("");
     } catch (error) {
@@ -828,6 +868,7 @@ export default function Home() {
       })));
       setLogisticsEvents(data.events ?? []);
       await refreshAllocations();
+      notify(`Estoque GH de ${logisticsCode} ajustado para ${adjustedQuantity} unidades.`);
       setLogisticsForm(null);
       setLogisticsError("");
     } catch (error) {
@@ -854,6 +895,7 @@ export default function Home() {
     try {
       const selections = Object.entries(orderSelections).flatMap(([itemId, rows]) => rows.map((row) => ({ itemId: Number(itemId), allocationId: row.allocationId, quantity: row.quantity })));
       await sendLogisticsAction({ action: "separate_order", documentId: selectedLogisticsOrder.id, selections });
+      notify(`Pedido ${selectedLogisticsOrder.order_number} separado. Aguardando a nota fiscal.`);
       setSelectedLogisticsOrder(null); setLogisticsForm(null); setLogisticsError("");
     } catch (error) { setLogisticsError(error instanceof Error ? error.message : "Não foi possível separar o pedido."); }
   }
@@ -861,7 +903,13 @@ export default function Home() {
   async function submitInvoice(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!invoiceOrder) return;
-    try { await sendLogisticsAction({ action: "invoice", orderId: invoiceOrder.id, invoiceNumber }); setInvoiceOrder(null); setInvoiceNumber(""); setLogisticsError(""); }
+    try {
+      await sendLogisticsAction({ action: "invoice", orderId: invoiceOrder.id, invoiceNumber });
+      notify(invoiceOrder.loan_items
+        ? `NF ${invoiceNumber.trim()} registrada. O pedido ${invoiceOrder.order_number} aguarda a devolução.`
+        : `NF ${invoiceNumber.trim()} registrada. Saída do pedido ${invoiceOrder.order_number} concluída.`);
+      setInvoiceOrder(null); setInvoiceNumber(""); setLogisticsError("");
+    }
     catch (error) { setLogisticsError(error instanceof Error ? error.message : "Não foi possível registrar a nota fiscal."); }
   }
 
@@ -871,6 +919,7 @@ export default function Home() {
     try {
       const positions = returnOrder.items.map((item) => ({ itemId: item.id, ...(returnPositions[item.id] ?? {}) }));
       await sendLogisticsAction({ action: "return_order", orderId: returnOrder.id, positions });
+      notify(`Devolução do pedido ${returnOrder.order_number} registrada no Estoque Devolução.`);
       setReturnOrder(null); setReturnPositions({}); setLogisticsError("");
     } catch (error) { setLogisticsError(error instanceof Error ? error.message : "Não foi possível registrar a devolução."); }
   }
@@ -893,6 +942,7 @@ export default function Home() {
       const data = await response.json() as { inventory?: Array<Omit<StockItem, "ghCommitted">>; allocations?: Allocation[]; tasks?: AllocationTask[]; incomingShipments?: IncomingShipment[]; error?: string };
       if (!response.ok) throw new Error(data.error ?? "Não foi possível alocar os produtos.");
       applyAllocationsData(data);
+      notify(`${allocationQuantity} un. de ${activeAllocationTask?.code ?? allocationCode} alocadas em Rua ${street.trim()} · Coluna ${allocationColumn.trim()} · Nível ${level.trim()}.`);
       setAllocationFormOpen(false);
       setSelectedAllocationTask(null);
       setAllocationError("");
@@ -923,6 +973,7 @@ export default function Home() {
       if (editingAllocation.isReturn) {
         await refreshLogistics();
       }
+      notify(`${transferQuantity} un. de ${editingAllocation.code} transferidas para Rua ${transferStreet.trim()} · Coluna ${transferColumn.trim()} · Nível ${transferLevel.trim()}.`);
       setEditingAllocation(null);
       setTransferError("");
     } catch (error) {
@@ -944,7 +995,7 @@ export default function Home() {
           </span>
         </div>
         <div className="user-area">
-          <span className="role">Comercial</span>
+          <span className="role">{sectionLabels[activeSection]}</span>
           <span className="avatar" aria-hidden="true">LU</span>
           <span className="user-name">Lucimara</span>
         </div>
@@ -1120,7 +1171,7 @@ export default function Home() {
               <div className="panel-heading">
                 <div>
                   <h2 id="commitments-title">Empenhos realizados</h2>
-                  <p>Registros criados nesta sessão.</p>
+                  <p>Documentos ativos que comprometem o saldo do Estoque GH.</p>
                 </div>
               </div>
               {commitments.length > 0 ? (
@@ -1280,8 +1331,8 @@ export default function Home() {
                           <div className="order-card-meta">
                             <span>{order.items.length} {order.items.length === 1 ? "produto" : "produtos"}</span>
                             <span>{totalUnits} unidades</span>
-                            <span>Câmbio: {order.dollar_rate_cents ? `R$ ${(order.dollar_rate_cents / 100).toFixed(2).replace(".", ",")}` : "—"}</span>
-                            <span>Frete: {order.freight_usd_cents ? formatUsdCents(order.freight_usd_cents) : "—"}</span>
+                            {order.dollar_rate_cents ? <span>Câmbio: R$ {(order.dollar_rate_cents / 100).toFixed(2).replace(".", ",")}</span> : null}
+                            {order.freight_usd_cents ? <span>Frete: {formatUsdCents(order.freight_usd_cents)}</span> : null}
                             <span>Total FOB: {formatUsdCents(totalUsdCents)}</span>
                             {order.freight_usd_cents ? <span>Total c/ Frete: {formatUsdCents(totalUsdCents + order.freight_usd_cents)}</span> : null}
                           </div>
@@ -1318,7 +1369,7 @@ export default function Home() {
                 }}>Ajuste de estoque</button>
                 <button className="primary-button" type="button" onClick={() => {
                   setLogisticsForm("exit"); setSelectedLogisticsOrder(null); setOrderSelections({}); setLogisticsError("");
-                }}>+ Saída de produtos</button>
+                }}>+ Separar pedido</button>
               </div>
             </div>
 
@@ -1823,9 +1874,11 @@ export default function Home() {
                       <span>Total FOB: <strong>{formatUsdCents(purchaseTotals.usdCents)}</strong></span>
                       <span>Total c/ Frete: <strong>{formatUsdCents(purchaseTotals.usdCents + (parseUsdInput(foreignFreightUsd) ?? 0))}</strong></span>
                     </div>
-                    {hasPurchaseTransit && (
-                      <label className="field"><span>Previsão de chegada ao Porto</span><input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></label>
-                    )}
+                    <label className="field">
+                      <span>Previsão de chegada ao Porto</span>
+                      <input type="date" value={dueDate} disabled={!hasPurchaseTransit} onChange={(event) => setDueDate(event.target.value)} />
+                      {!hasPurchaseTransit && <small className="field-hint">Necessária quando parte da compra seguir em trânsito.</small>}
+                    </label>
                   </>
                 ) : (
                   <>
@@ -2063,6 +2116,18 @@ export default function Home() {
           </div>
         );
       })()}
+
+      <div className="toast-region" role="status" aria-live="polite">
+        {toast && (
+          <div className="toast" key={toast.id}>
+            <span className="toast-mark" aria-hidden="true" />
+            <span>{toast.message}</span>
+            <button type="button" onClick={() => setToast(null)} aria-label="Fechar aviso">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+            </button>
+          </div>
+        )}
+      </div>
     </main>
   );
 }
