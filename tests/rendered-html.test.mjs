@@ -67,3 +67,10 @@ test("links embarque tasks and position transfers in Allocation", async () => {
   assert.match(allocationsRoute, /incomingShipments/);
   assert.match(mockApi, /incomingShipments/);
 });
+
+test("provides the three dashboards: Estoque GH, Estoque China, and Saída", async () => {
+  const dashboard = await readFile(new URL("app/valuation-dashboard.tsx", root), "utf8");
+  assert.match(dashboard, /Estoque GH/);
+  assert.match(dashboard, /Estoque China/);
+  assert.match(dashboard, /Saída/);
+});

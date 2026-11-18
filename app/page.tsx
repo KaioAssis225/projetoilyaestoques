@@ -800,7 +800,7 @@ export default function Home() {
 
       <section className="workspace" id="conteudo">
         {activeSection === "dashboard" ? (
-          <ValuationDashboard items={items} />
+          <ValuationDashboard items={items} logisticsEvents={logisticsEvents} />
         ) : activeSection === "stock" ? (
           <>
         <div className="page-heading">
