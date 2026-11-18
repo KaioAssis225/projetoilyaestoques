@@ -38,6 +38,8 @@ test("supports multi-item embarque orders and China withdrawals in Foreign Trade
   ]);
   assert.match(page, /Embarque \(nº do pedido \/ contêiner\)/);
   assert.match(page, /Valor FOB/);
+  assert.match(page, /Câmbio \(R\$\)/);
+  assert.match(page, /Frete \(US\$\)/);
   assert.match(page, /Importar planilha/);
   assert.match(page, /CODIGO INTERNO PRODUTO/);
   assert.match(page, /Descrição \(Banco de Dados\)/);

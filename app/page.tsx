@@ -28,6 +28,8 @@ type Shipment = {
   id: string;
   purchase_order_id: number | null;
   shipment_identifier: string;
+  dollar_rate_cents?: number | null;
+  freight_usd_cents?: number | null;
   source: string;
   stage: "transit" | "port";
   due_date: string;
@@ -716,6 +718,8 @@ export default function Home() {
         await sendForeignAction({
           action: "dispatch_china",
           shipmentIdentifier: foreignShipmentIdentifier,
+          dollarRate: foreignDollarRate,
+          freightUsd: foreignFreightUsd,
           dueDate,
           items: dispatchLines.map((line) => ({
             code: line.code.trim().toUpperCase(),
@@ -1116,6 +1120,8 @@ export default function Home() {
                   setForeignError("");
                   setImportedSheetNotice("");
                   setForeignShipmentIdentifier("");
+                  setForeignDollarRate("");
+                  setForeignFreightUsd("");
                   setDispatchLines([{ code: items[0]?.code ?? "", unitValueUsd: "", quantity: "" }]);
                   setDueDate("");
                 }}>Retirar do estoque China</button>
@@ -1152,7 +1158,11 @@ export default function Home() {
                       <article className={due ? "shipment-row due" : "shipment-row"} key={shipment.id}>
                         <div>
                           <strong>{shipment.shipment_identifier}</strong>
-                          <span>{totalUnits} unidades · {shipment.items.length} {shipment.items.length === 1 ? "item" : "itens"}</span>
+                          <span>
+                            {totalUnits} unidades · {shipment.items.length} {shipment.items.length === 1 ? "item" : "itens"}
+                            {shipment.dollar_rate_cents ? ` · Câmbio: R$ ${(shipment.dollar_rate_cents / 100).toFixed(2).replace(".", ",")}` : ""}
+                            {shipment.freight_usd_cents ? ` · Frete: ${formatUsdCents(shipment.freight_usd_cents)}` : ""}
+                          </span>
                           <div className="shipment-items-list">
                             {shipment.items.map((item) => (
                               <div className="shipment-item-line" key={item.shipment_id}>
@@ -1210,9 +1220,10 @@ export default function Home() {
                           <div className="order-card-meta">
                             <span>{order.items.length} {order.items.length === 1 ? "produto" : "produtos"}</span>
                             <span>{totalUnits} unidades</span>
-                            {order.dollar_rate_cents ? <span>Dólar: R$ {(order.dollar_rate_cents / 100).toFixed(2).replace(".", ",")}</span> : null}
-                            {order.freight_usd_cents ? <span>Frete: {formatUsdCents(order.freight_usd_cents)}</span> : null}
+                            <span>Câmbio: {order.dollar_rate_cents ? `R$ ${(order.dollar_rate_cents / 100).toFixed(2).replace(".", ",")}` : "—"}</span>
+                            <span>Frete: {order.freight_usd_cents ? formatUsdCents(order.freight_usd_cents) : "—"}</span>
                             <span>Total FOB: {formatUsdCents(totalUsdCents)}</span>
+                            {order.freight_usd_cents ? <span>Total c/ Frete: {formatUsdCents(totalUsdCents + order.freight_usd_cents)}</span> : null}
                           </div>
                         </div>
                         <div className="order-items-list">
@@ -1608,49 +1619,37 @@ export default function Home() {
                 {items.map((item) => <option key={item.code} value={item.code}>{item.code} — {item.description}</option>)}
               </datalist>
               <form onSubmit={submitForeignForm}>
-                {foreignForm === "purchase" ? (
-                  <div className="split-fields" style={{ gridTemplateColumns: "1.4fr 1fr 1fr" }}>
-                    <label className="field">
-                      <span>Embarque (nº do pedido / contêiner)</span>
-                      <input
-                        type="text"
-                        placeholder="Ex.: 028.26"
-                        value={foreignShipmentIdentifier}
-                        onChange={(event) => setForeignShipmentIdentifier(event.target.value)}
-                      />
-                    </label>
-                    <label className="field">
-                      <span>Dólar (R$)</span>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder="Ex.: 5.85"
-                        value={foreignDollarRate}
-                        onChange={(event) => setForeignDollarRate(event.target.value)}
-                      />
-                    </label>
-                    <label className="field">
-                      <span>Frete (US$)</span>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder="Ex.: 2500.00"
-                        value={foreignFreightUsd}
-                        onChange={(event) => setForeignFreightUsd(event.target.value)}
-                      />
-                    </label>
-                  </div>
-                ) : (
+                <div className="split-fields" style={{ gridTemplateColumns: "1.4fr 1fr 1fr" }}>
                   <label className="field">
                     <span>Embarque (nº do pedido / contêiner)</span>
                     <input
                       type="text"
-                      placeholder="Ex.: EMB-2026-001"
+                      placeholder="Ex.: 028.26"
                       value={foreignShipmentIdentifier}
                       onChange={(event) => setForeignShipmentIdentifier(event.target.value)}
                     />
                   </label>
-                )}
+                  <label className="field">
+                    <span>Câmbio (R$)</span>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="Ex.: 5.85"
+                      value={foreignDollarRate}
+                      onChange={(event) => setForeignDollarRate(event.target.value)}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Frete (US$)</span>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="Ex.: 2500.00"
+                      value={foreignFreightUsd}
+                      onChange={(event) => setForeignFreightUsd(event.target.value)}
+                    />
+                  </label>
+                </div>
 
                 {foreignForm === "purchase" ? (
                   <>
@@ -1759,7 +1758,10 @@ export default function Home() {
                       <span>Total comprado: <strong>{purchaseTotals.total}</strong> un.</span>
                       <span>Armazém China: <strong>{purchaseTotals.china}</strong> un.</span>
                       <span>Em trânsito: <strong>{purchaseTotals.transit}</strong> un.</span>
-                      <span>Total do pedido: <strong>{formatUsdCents(purchaseTotals.usdCents)}</strong></span>
+                      <span>Câmbio: <strong>{parseUsdInput(foreignDollarRate) ? `R$ ${(parseUsdInput(foreignDollarRate)! / 100).toFixed(2).replace(".", ",")}` : "—"}</strong></span>
+                      <span>Frete: <strong>{formatUsdCents(parseUsdInput(foreignFreightUsd))}</strong></span>
+                      <span>Total FOB: <strong>{formatUsdCents(purchaseTotals.usdCents)}</strong></span>
+                      <span>Total c/ Frete: <strong>{formatUsdCents(purchaseTotals.usdCents + (parseUsdInput(foreignFreightUsd) ?? 0))}</strong></span>
                     </div>
                     {hasPurchaseTransit && (
                       <label className="field"><span>Previsão de chegada ao Porto</span><input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></label>

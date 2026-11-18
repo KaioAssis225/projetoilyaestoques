@@ -15,6 +15,8 @@ type ShipmentRow = {
   id: number;
   purchase_order_id: number | null;
   shipment_identifier: string | null;
+  dollar_rate_cents: number | null;
+  freight_usd_cents: number | null;
   code: string;
   description: string;
   finish: string;
@@ -151,6 +153,12 @@ async function ensureDatabase() {
   if (!shipmentColumns.results.some((column) => column.name === "unit_value_usd_cents")) {
     await db.prepare("ALTER TABLE shipments ADD COLUMN unit_value_usd_cents INTEGER").run();
   }
+  if (!shipmentColumns.results.some((column) => column.name === "dollar_rate_cents")) {
+    await db.prepare("ALTER TABLE shipments ADD COLUMN dollar_rate_cents INTEGER").run();
+  }
+  if (!shipmentColumns.results.some((column) => column.name === "freight_usd_cents")) {
+    await db.prepare("ALTER TABLE shipments ADD COLUMN freight_usd_cents INTEGER").run();
+  }
 
   const inventoryColumns = await db.prepare("PRAGMA table_info(inventory)").all<{ name: string }>();
   if (!inventoryColumns.results.some((column) => column.name === "returns")) {
@@ -224,6 +232,8 @@ function groupShipments(rows: ShipmentRow[]) {
     id: string;
     purchase_order_id: number | null;
     shipment_identifier: string;
+    dollar_rate_cents: number | null;
+    freight_usd_cents: number | null;
     source: string;
     stage: "transit" | "port";
     due_date: string;
@@ -247,6 +257,8 @@ function groupShipments(rows: ShipmentRow[]) {
       id: key,
       purchase_order_id: row.purchase_order_id,
       shipment_identifier: row.shipment_identifier ?? `Transferência ${row.id}`,
+      dollar_rate_cents: row.dollar_rate_cents ?? null,
+      freight_usd_cents: row.freight_usd_cents ?? null,
       source: row.source,
       stage: row.stage,
       due_date: row.due_date,
@@ -305,6 +317,8 @@ export async function GET() {
   const [inventory, shipmentRows, orderRows] = await Promise.all([
     env.DB.prepare("SELECT * FROM inventory ORDER BY code").all(),
     env.DB.prepare(`SELECT s.id, s.purchase_order_id, COALESCE(po.shipment_identifier, s.shipment_identifier) AS shipment_identifier,
+      COALESCE(po.dollar_rate_cents, s.dollar_rate_cents) AS dollar_rate_cents,
+      COALESCE(po.freight_usd_cents, s.freight_usd_cents) AS freight_usd_cents,
       s.code, i.description, i.finish, s.quantity, s.unit_value_usd_cents, s.source, s.stage, s.due_date
       FROM shipments s
       JOIN inventory i ON i.code = s.code
@@ -374,8 +388,8 @@ async function purchase(payload: Record<string, unknown>) {
       ];
       if (item.transitQuantity > 0) {
         itemStatements.push(
-          env.DB.prepare("INSERT INTO shipments (purchase_order_id, shipment_identifier, code, quantity, unit_value_usd_cents, source, stage, due_date) VALUES (?, ?, ?, ?, ?, 'purchase', 'transit', ?)")
-            .bind(purchaseOrderId, shipmentIdentifier, item.code, item.transitQuantity, item.unitValueUsdCents, dueDate),
+          env.DB.prepare("INSERT INTO shipments (purchase_order_id, shipment_identifier, dollar_rate_cents, freight_usd_cents, code, quantity, unit_value_usd_cents, source, stage, due_date) VALUES (?, ?, ?, ?, ?, ?, ?, 'purchase', 'transit', ?)")
+            .bind(purchaseOrderId, shipmentIdentifier, dollarRateCents, freightUsdCents, item.code, item.transitQuantity, item.unitValueUsdCents, dueDate),
         );
       }
       return itemStatements;
@@ -390,6 +404,8 @@ async function purchase(payload: Record<string, unknown>) {
 
 async function dispatchChina(payload: Record<string, unknown>) {
   const shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim();
+  const dollarRateCents = payload.dollarRate ? unitValueUsdCents(payload.dollarRate) : null;
+  const freightUsdCents = payload.freightUsd ? unitValueUsdCents(payload.freightUsd) : null;
   const dueDate = validDate(payload.dueDate);
   const rawItems = Array.isArray(payload.items)
     ? payload.items as Array<Record<string, unknown>>
@@ -427,8 +443,8 @@ async function dispatchChina(payload: Record<string, unknown>) {
   await env.DB.batch(items.flatMap((item) => [
     env.DB.prepare("UPDATE inventory SET china = china - ?, transit = transit + ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?")
       .bind(item.quantity, item.quantity, item.code),
-    env.DB.prepare("INSERT INTO shipments (shipment_identifier, code, quantity, unit_value_usd_cents, source, stage, due_date) VALUES (?, ?, ?, ?, 'china', 'transit', ?)")
-      .bind(shipmentIdentifier, item.code, item.quantity, item.unitValueUsdCents, dueDate),
+    env.DB.prepare("INSERT INTO shipments (shipment_identifier, dollar_rate_cents, freight_usd_cents, code, quantity, unit_value_usd_cents, source, stage, due_date) VALUES (?, ?, ?, ?, ?, ?, 'china', 'transit', ?)")
+      .bind(shipmentIdentifier, dollarRateCents, freightUsdCents, item.code, item.quantity, item.unitValueUsdCents, dueDate),
   ]));
   return null;
 }

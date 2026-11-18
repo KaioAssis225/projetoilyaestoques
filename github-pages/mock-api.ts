@@ -170,6 +170,8 @@ function groupDemoShipments() {
       id: key,
       purchase_order_id: row.purchase_order_id ?? null,
       shipment_identifier: shipmentIdentifier,
+      dollar_rate_cents: order?.dollar_rate_cents ?? row.dollar_rate_cents ?? null,
+      freight_usd_cents: order?.freight_usd_cents ?? row.freight_usd_cents ?? null,
       source: row.source,
       stage: row.stage,
       due_date: row.due_date,
@@ -372,6 +374,8 @@ async function foreignApi(method: string, input: RequestInfo | URL, init?: Reque
           id: next("shipment"),
           purchase_order_id: purchaseId,
           shipment_identifier: shipmentIdentifier,
+          dollar_rate_cents: dollarRateCents,
+          freight_usd_cents: freightUsdCents,
           code: entry.code,
           quantity: entry.transit,
           unit_value_usd_cents: entry.unitValueUsdCents,
@@ -392,6 +396,8 @@ async function foreignApi(method: string, input: RequestInfo | URL, init?: Reque
     });
   } else if (payload.action === "dispatch_china") {
     const shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim();
+    const dollarRateCents = payload.dollarRate ? parseUsdCents(payload.dollarRate) : null;
+    const freightUsdCents = payload.freightUsd ? parseUsdCents(payload.freightUsd) : null;
     const dueDate = validDate(payload.dueDate);
     const rawItems = Array.isArray(payload.items)
       ? payload.items
@@ -427,6 +433,8 @@ async function foreignApi(method: string, input: RequestInfo | URL, init?: Reque
         id: next("shipment"),
         purchase_order_id: null,
         shipment_identifier: shipmentIdentifier,
+        dollar_rate_cents: dollarRateCents,
+        freight_usd_cents: freightUsdCents,
         code: entry.code,
         quantity: entry.quantity,
         unit_value_usd_cents: entry.unitValueUsdCents,
