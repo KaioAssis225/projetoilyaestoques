@@ -22,6 +22,39 @@ async function ensureTables() {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
   ]);
   await ensureStockGuards();
+  await backfillExitEvents();
+}
+
+const backfilledDatabases = new WeakSet<object>();
+
+/**
+ * Até a correção da Baixa por NF, a NF não gravava eventos de saída, e o histórico
+ * e o Dashboard Saída ficavam vazios. Recria uma vez por instância as saídas que faltam
+ * para pedidos que já têm NF, usando a data da baixa. Pedidos que já têm saídas não são tocados.
+ */
+async function backfillExitEvents() {
+  if (backfilledDatabases.has(env.DB)) return;
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO logistics_events (type, code, quantity, invoice_number, order_number, street, "column", level, note, created_at)
+      SELECT 'exit', oi.code, s.quantity, o.invoice_number, o.order_number, s.street, s."column", s.level,
+        CASE WHEN o.loan_items = 1 THEN 'Itens de empréstimo' ELSE '' END, COALESCE(o.departed_at, CURRENT_TIMESTAMP)
+      FROM logistics_orders o
+      JOIN logistics_order_items oi ON oi.logistics_order_id = o.id
+      JOIN logistics_order_sources s ON s.logistics_order_item_id = oi.id
+      WHERE o.invoice_number IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM logistics_events e WHERE e.type = 'exit' AND e.order_number = o.order_number AND e.invoice_number = o.invoice_number)
+      ORDER BY o.id, oi.id, s.id`),
+    env.DB.prepare(`INSERT INTO logistics_events (type, code, quantity, invoice_number, order_number, note, created_at)
+      SELECT 'exit', oi.code, oi.quantity, o.invoice_number, o.order_number,
+        CASE WHEN o.loan_items = 1 THEN 'Itens de empréstimo' ELSE '' END, COALESCE(o.departed_at, CURRENT_TIMESTAMP)
+      FROM logistics_orders o
+      JOIN logistics_order_items oi ON oi.logistics_order_id = o.id
+      WHERE o.invoice_number IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM logistics_order_sources s WHERE s.logistics_order_item_id = oi.id)
+        AND NOT EXISTS (SELECT 1 FROM logistics_events e WHERE e.type = 'exit' AND e.order_number = o.order_number
+          AND e.invoice_number = o.invoice_number AND e.code = oi.code)`),
+  ]);
+  backfilledDatabases.add(env.DB);
 }
 
 async function readData() {

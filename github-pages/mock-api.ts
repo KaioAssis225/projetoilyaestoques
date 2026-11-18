@@ -90,9 +90,29 @@ function loadState(): DemoState {
         parsed.inventory.push({ ...item, china: 0, transit: 0, port: 0, gh: 0, returns: 0, updated_at: now() });
       }
     }
+    backfillExitEvents(parsed);
     return parsed;
   } catch {
     return initialState();
+  }
+}
+
+/** Mesmo retroativo do D1: NFs registradas antes da correção não tinham eventos de saída. */
+function backfillExitEvents(target: DemoState) {
+  target.logisticsEvents ??= [];
+  for (const order of target.logisticsOrders ?? []) {
+    if (!order.invoice_number) continue;
+    const hasExit = target.logisticsEvents.some((event) => event.type === "exit"
+      && event.order_number === order.order_number && event.invoice_number === order.invoice_number);
+    if (hasExit) continue;
+    const note = order.loan_items ? "Itens de empréstimo" : "";
+    for (const line of order.items ?? []) {
+      const sources = line.sources?.length ? line.sources : [{ street: null, column: null, level: null, quantity: line.quantity }];
+      for (const source of sources) {
+        target.counters.logisticsEvent = (target.counters.logisticsEvent ?? 0) + 1;
+        target.logisticsEvents.push({ id: target.counters.logisticsEvent, type: "exit", code: line.code, quantity: source.quantity, previous_quantity: null, new_quantity: null, invoice_number: order.invoice_number, order_number: order.order_number, street: source.street, column: source.column, level: source.level, note, created_at: order.departed_at ?? now() });
+      }
+    }
   }
 }
 
