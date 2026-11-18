@@ -17,6 +17,8 @@ export const purchaseOrders = sqliteTable("purchase_orders", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   shipmentIdentifier: text("shipment_identifier").notNull().unique(),
   invoiceCode: text("invoice_code"),
+  dollarRateCents: integer("dollar_rate_cents"),
+  freightUsdCents: integer("freight_usd_cents"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 

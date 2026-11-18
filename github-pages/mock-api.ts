@@ -17,12 +17,30 @@ type DemoState = {
 const STORAGE_KEY = "ilya-estoque-github-pages-demo-v3";
 const originalFetch = window.fetch.bind(window);
 
+const CATALOG_PRODUCTS: Array<{ code: string; description: string; finish: string }> = [
+  { code: "ICS0001", description: "CONJUNTO SEATLE - TAUPE / TECIDO NATURAL / POLYWOOD TEKA", finish: "Taupe" },
+  { code: "IES0005", description: "ESTRUTURA ESPREGUICADEIRA TEXAS S/ BCS - SEM GRADE", finish: "Sem Grade" },
+  { code: "IMJ0003", description: "MESA JANTAR ASPEN C/ F RED 1,02 D X 0,72 H - TAUPE", finish: "Taupe" },
+  { code: "IES0073", description: "ESPREGUICADEIRA LONDON S/ BCS - SEM GRADE", finish: "Sem Grade" },
+  { code: "ISF0102", description: "SOFA LONDON 2 L C/ BCS- TAUPE", finish: "Taupe" },
+  { code: "IPL0094", description: "POLTRONA LONDON C/ BCS- TAUPE", finish: "Taupe" },
+  { code: "ICD0004", description: "CADEIRA GENOVA C/ BCS - TAUPE / KHAKI FECHADO / POLYWOOD TEKA", finish: "Taupe" },
+  { code: "ICD0007", description: "CADEIRA ORLEANS C/ BCS - TAUPE / KHAKI FECHADO", finish: "Taupe" },
+  { code: "IES0057", description: "ESPREGUICADEIRA LONDON S/ BCS - TAUPE / KHAKI", finish: "Taupe" },
+  { code: "IMJ0005", description: "MESA JANTAR ASPEN C/ F RED 1,20 D X 0,72 H - TAUPE", finish: "Taupe" },
+  { code: "00030781", description: "KIT BATOQUE ESPREGUICADEIRA TEXAS", finish: "Padrão" },
+  { code: "00027871", description: "BRACO DE POLYWOOD CADEIRA GENOVA", finish: "Polywood" },
+  { code: "MP000659", description: "BATOQUE ESPREGUIÇADEIRA LONDON - PRETO", finish: "Preto" },
+  { code: "MP000658", description: "BATOQUE ESPREGUIÇADEIRA LONDON - CHAMPAGNE", finish: "Champagne" },
+];
+
 function initialState(): DemoState {
   return {
     inventory: [
       { code: "CD0100", description: "Cadeira", finish: "Taupe", china: 50, transit: 20, port: 0, gh: 120, returns: 4, updated_at: now() },
       { code: "MJ0100", description: "Mesa", finish: "Rose", china: 40, transit: 0, port: 30, gh: 80, returns: 0, updated_at: now() },
       { code: "SF0100", description: "Sofá", finish: "Areia", china: 60, transit: 50, port: 0, gh: 100, returns: 2, updated_at: now() },
+      ...CATALOG_PRODUCTS.map((item) => ({ ...item, china: 0, transit: 0, port: 0, gh: 0, returns: 0, updated_at: now() })),
     ],
     shipments: [
       { id: 1, purchase_order_id: 1, shipment_identifier: "EMB-DEMO-001", code: "CD0100", quantity: 20, unit_value_usd_cents: 4500, source: "purchase", stage: "transit", due_date: dateAfter(7) },
@@ -65,7 +83,14 @@ function initialState(): DemoState {
 function loadState(): DemoState {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-    return saved ? JSON.parse(saved) : initialState();
+    if (!saved) return initialState();
+    const parsed = JSON.parse(saved) as DemoState;
+    for (const item of CATALOG_PRODUCTS) {
+      if (!parsed.inventory.some((existing) => existing.code === item.code)) {
+        parsed.inventory.push({ ...item, china: 0, transit: 0, port: 0, gh: 0, returns: 0, updated_at: now() });
+      }
+    }
+    return parsed;
   } catch {
     return initialState();
   }
@@ -299,19 +324,19 @@ async function foreignApi(method: string, input: RequestInfo | URL, init?: Reque
   if (payload.action === "purchase") {
     const shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim();
     const invoiceCode = String(payload.invoiceCode ?? "").trim() || null;
+    const dollarRateCents = payload.dollarRate ? parseUsdCents(payload.dollarRate) : null;
+    const freightUsdCents = payload.freightUsd ? parseUsdCents(payload.freightUsd) : null;
     const rawItems = Array.isArray(payload.items) ? payload.items : [];
     const dueDate = validDate(payload.dueDate);
     if (!shipmentIdentifier) return json({ error: "Informe o embarque." }, 400);
     if (!rawItems.length) return json({ error: "Adicione ao menos um item ao pedido." }, 400);
     if (shipmentIdentifierExists(shipmentIdentifier)) return json({ error: "Já existe um embarque com este identificador." }, 409);
 
-    const seenCodes = new Set<string>();
     const parsedItems: Array<{ code: string; total: number; china: number; transit: number; unitValueUsdCents: number }> = [];
     for (const rawItem of rawItems) {
       const code = String(rawItem.code ?? "").trim().toUpperCase();
       const stock = inventoryItem(code);
-      if (!stock) return json({ error: `${code || "Item"}: código inválido.` }, 400);
-      if (seenCodes.has(code)) return json({ error: `${code}: o produto aparece mais de uma vez no pedido.` }, 400);
+      if (!stock) return json({ error: `${code || "Item"}: código não encontrado no banco de dados.` }, 400);
       const total = Number(rawItem.totalQuantity);
       const china = Number(rawItem.chinaQuantity);
       const valueCents = parseUsdCents(rawItem.unitValueUsd);
@@ -319,9 +344,8 @@ async function foreignApi(method: string, input: RequestInfo | URL, init?: Reque
         return json({ error: `${code}: informe quantidades inteiras válidas; a quantidade na China não pode superar o total.` }, 400);
       }
       if (!valueCents) {
-        return json({ error: `${code}: informe um valor unitário em dólar maior que zero, com até duas casas decimais.` }, 400);
+        return json({ error: `${code}: informe um Valor FOB maior que zero, com até duas casas decimais.` }, 400);
       }
-      seenCodes.add(code);
       parsedItems.push({ code, total, china, transit: total - china, unitValueUsdCents: valueCents });
     }
     if (parsedItems.some((item) => item.transit > 0) && !dueDate) {
@@ -357,7 +381,15 @@ async function foreignApi(method: string, input: RequestInfo | URL, init?: Reque
         });
       }
     }
-    state.purchaseOrders.push({ id: purchaseId, shipment_identifier: shipmentIdentifier, invoice_code: invoiceCode, created_at: now(), items: orderItems });
+    state.purchaseOrders.push({
+      id: purchaseId,
+      shipment_identifier: shipmentIdentifier,
+      invoice_code: invoiceCode,
+      dollar_rate_cents: dollarRateCents,
+      freight_usd_cents: freightUsdCents,
+      created_at: now(),
+      items: orderItems,
+    });
   } else if (payload.action === "dispatch_china") {
     const shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim();
     const dueDate = validDate(payload.dueDate);

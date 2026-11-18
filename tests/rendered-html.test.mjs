@@ -38,11 +38,15 @@ test("supports multi-item embarque orders and China withdrawals in Foreign Trade
   ]);
   assert.match(page, /Embarque \(nº do pedido \/ contêiner\)/);
   assert.match(page, /Valor FOB/);
+  assert.match(page, /Importar planilha/);
+  assert.match(page, /CODIGO INTERNO PRODUTO/);
+  assert.match(page, /Descrição \(Banco de Dados\)/);
   assert.doesNotMatch(page, /Código da Nota Fiscal/);
   assert.match(page, /\+ Adicionar produto/);
   assert.match(page, /Qtd\. disponível/);
   assert.match(page, /Qtd\. a retirar/);
   assert.match(foreignTrade, /shipment_identifier/);
+  assert.match(foreignTrade, /ICS0001/);
   assert.match(foreignTrade, /purchase_order_items/);
   assert.match(foreignTrade, /dispatchChina/);
   assert.match(schema, /purchaseOrderItems/);

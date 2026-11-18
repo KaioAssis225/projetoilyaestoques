@@ -38,6 +38,8 @@ type PurchaseOrder = {
   id: number;
   shipment_identifier: string;
   invoice_code?: string | null;
+  dollar_rate_cents?: number | null;
+  freight_usd_cents?: number | null;
   created_at: string;
   items: Array<{
     item_id: number;
@@ -149,6 +151,20 @@ const initialItems: StockItem[] = [
   { code: "CD0100", description: "Cadeira", finish: "Taupe", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
   { code: "SF0100", description: "Sofá", finish: "Areia", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
   { code: "MJ0100", description: "Mesa", finish: "Rose", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
+  { code: "ICS0001", description: "CONJUNTO SEATLE - TAUPE / TECIDO NATURAL / POLYWOOD TEKA", finish: "Taupe", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
+  { code: "IES0005", description: "ESTRUTURA ESPREGUICADEIRA TEXAS S/ BCS - SEM GRADE", finish: "Sem Grade", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
+  { code: "IMJ0003", description: "MESA JANTAR ASPEN C/ F RED 1,02 D X 0,72 H - TAUPE", finish: "Taupe", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
+  { code: "IES0073", description: "ESPREGUICADEIRA LONDON S/ BCS - SEM GRADE", finish: "Sem Grade", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
+  { code: "ISF0102", description: "SOFA LONDON 2 L C/ BCS- TAUPE", finish: "Taupe", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
+  { code: "IPL0094", description: "POLTRONA LONDON C/ BCS- TAUPE", finish: "Taupe", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
+  { code: "ICD0004", description: "CADEIRA GENOVA C/ BCS - TAUPE / KHAKI FECHADO / POLYWOOD TEKA", finish: "Taupe", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
+  { code: "ICD0007", description: "CADEIRA ORLEANS C/ BCS - TAUPE / KHAKI FECHADO", finish: "Taupe", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
+  { code: "IES0057", description: "ESPREGUICADEIRA LONDON S/ BCS - TAUPE / KHAKI", finish: "Taupe", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
+  { code: "IMJ0005", description: "MESA JANTAR ASPEN C/ F RED 1,20 D X 0,72 H - TAUPE", finish: "Taupe", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
+  { code: "00030781", description: "KIT BATOQUE ESPREGUICADEIRA TEXAS", finish: "Padrão", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
+  { code: "00027871", description: "BRACO DE POLYWOOD CADEIRA GENOVA", finish: "Polywood", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
+  { code: "MP000659", description: "BATOQUE ESPREGUIÇADEIRA LONDON - PRETO", finish: "Preto", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
+  { code: "MP000658", description: "BATOQUE ESPREGUIÇADEIRA LONDON - CHAMPAGNE", finish: "Champagne", china: 0, transit: 0, port: 0, gh: 0, returns: 0, ghCommitted: 0 },
 ];
 
 type SortKey = keyof Pick<StockItem, "code" | "description" | "china" | "transit" | "port" | "gh" | "returns">;
@@ -258,6 +274,9 @@ export default function Home() {
   const [foreignError, setForeignError] = useState("");
   const [foreignForm, setForeignForm] = useState<"purchase" | "dispatch" | null>(null);
   const [foreignShipmentIdentifier, setForeignShipmentIdentifier] = useState("");
+  const [foreignDollarRate, setForeignDollarRate] = useState("");
+  const [foreignFreightUsd, setForeignFreightUsd] = useState("");
+  const [importedSheetNotice, setImportedSheetNotice] = useState("");
   const [purchaseLines, setPurchaseLines] = useState([{ code: initialItems[0].code, unitValueUsd: "", totalQuantity: "", chinaQuantity: "" }]);
   const [dispatchLines, setDispatchLines] = useState([{ code: initialItems[0].code, unitValueUsd: "", quantity: "" }]);
   const [dueDate, setDueDate] = useState("");
@@ -562,6 +581,120 @@ export default function Home() {
     await refreshAllocations();
   }
 
+  async function handleForeignSpreadsheetUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      const XLSX = await import("xlsx");
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: "array" });
+      const firstSheetName = workbook.SheetNames[0];
+      if (!firstSheetName) throw new Error("Planilha vazia.");
+      const sheet = workbook.Sheets[firstSheetName];
+      const rows = XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1, raw: false, defval: "" });
+      if (!rows.length) throw new Error("Nenhuma linha encontrada na planilha.");
+
+      const norm = (val: unknown) =>
+        String(val ?? "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toUpperCase()
+          .trim();
+
+      const row0 = (rows[0] ?? []).map(norm);
+      const row1 = (rows[1] ?? []).map(norm);
+
+      const findCol = (pred: (header: string) => boolean, fallback: number) => {
+        const idx0 = row0.findIndex(pred);
+        if (idx0 !== -1) return idx0;
+        const idx1 = row1.findIndex(pred);
+        if (idx1 !== -1) return idx1;
+        return fallback;
+      };
+
+      const codeCol = findCol((h) => h.includes("CODIGO INTERNO PRODUTO") || h === "CODIGO INTERNO" || h === "CODIGO", 4);
+      const qtyCol = findCol((h) => h === "QUANTIDADE" || h.startsWith("QUANTIDADE"), 6);
+      const unitValueCol = findCol((h) => h.includes("VALOR UNITARIO") || h.includes("VALOR FOB"), 21);
+      const dollarCol = findCol((h) => h === "DOLAR" || h.includes("DOLAR"), 28);
+      const freightCol = findCol((h) => h === "FRETE" || h.includes("FRETE"), 29);
+
+      const cleanDecimal = (raw: unknown): string => {
+        const stripped = String(raw ?? "")
+          .replace(/[R$US\s]/gi, "")
+          .trim();
+        if (!stripped) return "";
+        const normalized = stripped.includes(",") && stripped.includes(".")
+          ? stripped.replace(/\./g, "").replace(",", ".")
+          : stripped.replace(",", ".");
+        const parsed = Number(normalized);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed.toFixed(2) : "";
+      };
+
+      const extractedLines: Array<{ code: string; unitValueUsd: string; totalQuantity: string; chinaQuantity: string }> = [];
+      let detectedDollar = "";
+      let detectedFreight = "";
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i] ?? [];
+        const rawCode = String(row[codeCol] ?? "").trim().toUpperCase();
+        const normCode = norm(rawCode);
+
+        const maybeDollar = cleanDecimal(row[dollarCol]);
+        if (maybeDollar && !detectedDollar) detectedDollar = maybeDollar;
+        const maybeFreight = cleanDecimal(row[freightCol]);
+        if (maybeFreight && !detectedFreight) detectedFreight = maybeFreight;
+
+        if (
+          !rawCode ||
+          normCode === "IMPORTADOR" ||
+          normCode === "EXCELLENCE" ||
+          normCode.includes("CODIGO INTERNO") ||
+          normCode === "CODIGO"
+        ) {
+          continue;
+        }
+
+        const rawQty = String(row[qtyCol] ?? "").trim().replace(",", ".");
+        const parsedQty = Math.round(Number(rawQty));
+        const formattedFob = cleanDecimal(row[unitValueCol]);
+
+        if (!Number.isInteger(parsedQty) || parsedQty <= 0 || !formattedFob) {
+          continue;
+        }
+
+        extractedLines.push({
+          code: rawCode,
+          unitValueUsd: formattedFob,
+          totalQuantity: String(parsedQty),
+          chinaQuantity: "0",
+        });
+      }
+
+      if (!extractedLines.length) {
+        throw new Error("Nenhum item válido encontrado nas colunas CODIGO INTERNO PRODUTO, QUANTIDADE e VALOR UNITARIO.");
+      }
+
+      setPurchaseLines(extractedLines);
+      if (detectedDollar) setForeignDollarRate(detectedDollar);
+      if (detectedFreight) setForeignFreightUsd(detectedFreight);
+
+      if (!foreignShipmentIdentifier.trim()) {
+        const baseName = file.name.replace(/\.[^.]+$/, "").split(/\s*-\s*/)[0]?.trim();
+        if (baseName) setForeignShipmentIdentifier(baseName);
+      }
+
+      const matchedInDb = extractedLines.filter((line) => Boolean(findStockItem(line.code))).length;
+      setImportedSheetNotice(
+        `Planilha "${file.name}" lida: ${extractedLines.length} itens importados (${matchedInDb}/${extractedLines.length} vinculados ao banco de dados).`,
+      );
+      setForeignError("");
+      setForeignForm("purchase");
+    } catch (error) {
+      setForeignError(error instanceof Error ? error.message : "Não foi possível ler a planilha.");
+    }
+  }
+
   async function submitForeignForm(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
@@ -569,6 +702,8 @@ export default function Home() {
         await sendForeignAction({
           action: "purchase",
           shipmentIdentifier: foreignShipmentIdentifier,
+          dollarRate: foreignDollarRate,
+          freightUsd: foreignFreightUsd,
           dueDate,
           items: purchaseLines.map((line) => ({
             code: line.code.trim().toUpperCase(),
@@ -590,6 +725,7 @@ export default function Home() {
         });
       }
       setForeignForm(null);
+      setImportedSheetNotice("");
       setForeignError("");
     } catch (error) {
       setForeignError(error instanceof Error ? error.message : "Não foi possível concluir a operação.");
@@ -966,9 +1102,19 @@ export default function Home() {
                 <p className="subtitle">Acompanhe compras e transferências da China até o Estoque GH.</p>
               </div>
               <div className="heading-actions">
+                <label className="secondary-button" style={{ cursor: "pointer", display: "inline-flex", alignItems: "center" }}>
+                  Importar planilha
+                  <input
+                    type="file"
+                    accept=".xls,.xlsx,.csv"
+                    hidden
+                    onChange={(event) => void handleForeignSpreadsheetUpload(event)}
+                  />
+                </label>
                 <button className="secondary-button" type="button" onClick={() => {
                   setForeignForm("dispatch");
                   setForeignError("");
+                  setImportedSheetNotice("");
                   setForeignShipmentIdentifier("");
                   setDispatchLines([{ code: items[0]?.code ?? "", unitValueUsd: "", quantity: "" }]);
                   setDueDate("");
@@ -976,7 +1122,10 @@ export default function Home() {
                 <button className="primary-button" type="button" onClick={() => {
                   setForeignForm("purchase");
                   setForeignError("");
+                  setImportedSheetNotice("");
                   setForeignShipmentIdentifier("");
+                  setForeignDollarRate("");
+                  setForeignFreightUsd("");
                   setPurchaseLines([{ code: items[0]?.code ?? "", unitValueUsd: "", totalQuantity: "", chinaQuantity: "" }]);
                   setDueDate("");
                 }}>+ Novo pedido de compra</button>
@@ -1061,7 +1210,9 @@ export default function Home() {
                           <div className="order-card-meta">
                             <span>{order.items.length} {order.items.length === 1 ? "produto" : "produtos"}</span>
                             <span>{totalUnits} unidades</span>
-                            <span>Total: {formatUsdCents(totalUsdCents)}</span>
+                            {order.dollar_rate_cents ? <span>Dólar: R$ {(order.dollar_rate_cents / 100).toFixed(2).replace(".", ",")}</span> : null}
+                            {order.freight_usd_cents ? <span>Frete: {formatUsdCents(order.freight_usd_cents)}</span> : null}
+                            <span>Total FOB: {formatUsdCents(totalUsdCents)}</span>
                           </div>
                         </div>
                         <div className="order-items-list">
@@ -1454,29 +1605,79 @@ export default function Home() {
                 <button className="close-button" type="button" onClick={() => setForeignForm(null)} aria-label="Fechar">×</button>
               </div>
               <datalist id="foreign-product-codes">
-                {items.map((item) => <option key={item.code} value={item.code}>{item.code} — {item.description} ({item.finish})</option>)}
+                {items.map((item) => <option key={item.code} value={item.code}>{item.code} — {item.description}</option>)}
               </datalist>
               <form onSubmit={submitForeignForm}>
-                <label className="field">
-                  <span>Embarque (nº do pedido / contêiner)</span>
-                  <input
-                    type="text"
-                    placeholder="Ex.: EMB-2026-001"
-                    value={foreignShipmentIdentifier}
-                    onChange={(event) => setForeignShipmentIdentifier(event.target.value)}
-                  />
-                </label>
+                {foreignForm === "purchase" ? (
+                  <div className="split-fields" style={{ gridTemplateColumns: "1.4fr 1fr 1fr" }}>
+                    <label className="field">
+                      <span>Embarque (nº do pedido / contêiner)</span>
+                      <input
+                        type="text"
+                        placeholder="Ex.: 028.26"
+                        value={foreignShipmentIdentifier}
+                        onChange={(event) => setForeignShipmentIdentifier(event.target.value)}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Dólar (R$)</span>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        placeholder="Ex.: 5.85"
+                        value={foreignDollarRate}
+                        onChange={(event) => setForeignDollarRate(event.target.value)}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Frete (US$)</span>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        placeholder="Ex.: 2500.00"
+                        value={foreignFreightUsd}
+                        onChange={(event) => setForeignFreightUsd(event.target.value)}
+                      />
+                    </label>
+                  </div>
+                ) : (
+                  <label className="field">
+                    <span>Embarque (nº do pedido / contêiner)</span>
+                    <input
+                      type="text"
+                      placeholder="Ex.: EMB-2026-001"
+                      value={foreignShipmentIdentifier}
+                      onChange={(event) => setForeignShipmentIdentifier(event.target.value)}
+                    />
+                  </label>
+                )}
 
                 {foreignForm === "purchase" ? (
                   <>
+                    {importedSheetNotice && (
+                      <p className="field-hint" style={{ margin: "0 0 10px", color: "var(--accent)", fontWeight: 500 }}>
+                        {importedSheetNotice}
+                      </p>
+                    )}
                     <div className="foreign-lines">
                       <div className="foreign-lines-head">
                         <strong>Produtos do embarque</strong>
-                        <button
-                          className="secondary-button compact"
-                          type="button"
-                          onClick={() => setPurchaseLines((current) => [...current, { code: "", unitValueUsd: "", totalQuantity: "", chinaQuantity: "" }])}
-                        >+ Adicionar produto</button>
+                        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                          <label className="secondary-button compact" style={{ cursor: "pointer", display: "inline-flex", alignItems: "center" }}>
+                            Importar planilha (.xls, .xlsx, .csv)
+                            <input
+                              type="file"
+                              accept=".xls,.xlsx,.csv"
+                              hidden
+                              onChange={(event) => void handleForeignSpreadsheetUpload(event)}
+                            />
+                          </label>
+                          <button
+                            className="secondary-button compact"
+                            type="button"
+                            onClick={() => setPurchaseLines((current) => [...current, { code: "", unitValueUsd: "", totalQuantity: "", chinaQuantity: "" }])}
+                          >+ Adicionar produto</button>
+                        </div>
                       </div>
                       {purchaseLines.map((line, index) => {
                         const matched = findStockItem(line.code);
@@ -1493,15 +1694,15 @@ export default function Home() {
                                 <span>Código</span>
                                 <input
                                   list="foreign-product-codes"
-                                  placeholder="Ex.: CD0100"
+                                  placeholder="Ex.: ICS0001"
                                   value={line.code}
                                   onChange={(event) => setPurchaseLines((current) => current.map((entry, idx) => idx === index ? { ...entry, code: event.target.value } : entry))}
                                 />
                               </label>
                               <div className="field">
-                                <span>Descrição</span>
-                                <div className={matched ? "foreign-readonly" : "foreign-readonly muted"} title={matched ? `${matched.description} (${matched.finish})` : "Selecione um código válido"}>
-                                  {matched ? `${matched.description} (${matched.finish})` : "Código não encontrado"}
+                                <span>Descrição (Banco de Dados)</span>
+                                <div className={matched ? "foreign-readonly" : "foreign-readonly muted"} title={matched ? matched.description : "Selecione um código válido cadastrado no banco"}>
+                                  {matched ? matched.description : "Código não encontrado"}
                                 </div>
                               </div>
                               <label className="field">
@@ -1600,9 +1801,9 @@ export default function Home() {
                                 />
                               </label>
                               <div className="field">
-                                <span>Descrição</span>
-                                <div className={matched ? "foreign-readonly" : "foreign-readonly muted"} title={matched ? `${matched.description} (${matched.finish})` : "Selecione um código válido"}>
-                                  {matched ? `${matched.description} (${matched.finish})` : "Código não encontrado"}
+                                <span>Descrição (Banco de Dados)</span>
+                                <div className={matched ? "foreign-readonly" : "foreign-readonly muted"} title={matched ? matched.description : "Selecione um código válido cadastrado no banco"}>
+                                  {matched ? matched.description : "Código não encontrado"}
                                 </div>
                               </div>
                               <div className="field">

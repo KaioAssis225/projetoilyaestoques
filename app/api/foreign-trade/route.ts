@@ -29,6 +29,8 @@ type PurchaseOrderRow = {
   id: number;
   shipment_identifier: string;
   invoice_code: string | null;
+  dollar_rate_cents: number | null;
+  freight_usd_cents: number | null;
   created_at: string;
   item_id: number;
   code: string;
@@ -121,6 +123,13 @@ async function ensureDatabase() {
   } else if (!purchaseOrderTable.results.some((column) => column.name === "invoice_code")) {
     await db.prepare("ALTER TABLE purchase_orders ADD COLUMN invoice_code TEXT").run();
   }
+  const latestOrderCols = await db.prepare("PRAGMA table_info(purchase_orders)").all<{ name: string }>();
+  if (!latestOrderCols.results.some((column) => column.name === "dollar_rate_cents")) {
+    await db.prepare("ALTER TABLE purchase_orders ADD COLUMN dollar_rate_cents INTEGER").run();
+  }
+  if (!latestOrderCols.results.some((column) => column.name === "freight_usd_cents")) {
+    await db.prepare("ALTER TABLE purchase_orders ADD COLUMN freight_usd_cents INTEGER").run();
+  }
 
   await db.prepare(`CREATE TABLE IF NOT EXISTS purchase_order_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,14 +157,32 @@ async function ensureDatabase() {
     await db.prepare("ALTER TABLE inventory ADD COLUMN returns INTEGER NOT NULL DEFAULT 0").run();
   }
 
-  await db.batch([
-    db.prepare("INSERT OR IGNORE INTO inventory (code, description, finish, china, transit, port, gh) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .bind("CD0100", "Cadeira", "Taupe", 0, 0, 0, 0),
-    db.prepare("INSERT OR IGNORE INTO inventory (code, description, finish, china, transit, port, gh) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .bind("SF0100", "Sofá", "Areia", 0, 0, 0, 0),
-    db.prepare("INSERT OR IGNORE INTO inventory (code, description, finish, china, transit, port, gh) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .bind("MJ0100", "Mesa", "Rose", 0, 0, 0, 0),
-  ]);
+  const catalogProducts: Array<[string, string, string]> = [
+    ["CD0100", "Cadeira", "Taupe"],
+    ["SF0100", "Sofá", "Areia"],
+    ["MJ0100", "Mesa", "Rose"],
+    ["ICS0001", "CONJUNTO SEATLE - TAUPE / TECIDO NATURAL / POLYWOOD TEKA", "Taupe"],
+    ["IES0005", "ESTRUTURA ESPREGUICADEIRA TEXAS S/ BCS - SEM GRADE", "Sem Grade"],
+    ["IMJ0003", "MESA JANTAR ASPEN C/ F RED 1,02 D X 0,72 H - TAUPE", "Taupe"],
+    ["IES0073", "ESPREGUICADEIRA LONDON S/ BCS - SEM GRADE", "Sem Grade"],
+    ["ISF0102", "SOFA LONDON 2 L C/ BCS- TAUPE", "Taupe"],
+    ["IPL0094", "POLTRONA LONDON C/ BCS- TAUPE", "Taupe"],
+    ["ICD0004", "CADEIRA GENOVA C/ BCS - TAUPE / KHAKI FECHADO / POLYWOOD TEKA", "Taupe"],
+    ["ICD0007", "CADEIRA ORLEANS C/ BCS - TAUPE / KHAKI FECHADO", "Taupe"],
+    ["IES0057", "ESPREGUICADEIRA LONDON S/ BCS - TAUPE / KHAKI", "Taupe"],
+    ["IMJ0005", "MESA JANTAR ASPEN C/ F RED 1,20 D X 0,72 H - TAUPE", "Taupe"],
+    ["00030781", "KIT BATOQUE ESPREGUICADEIRA TEXAS", "Padrão"],
+    ["00027871", "BRACO DE POLYWOOD CADEIRA GENOVA", "Polywood"],
+    ["MP000659", "BATOQUE ESPREGUIÇADEIRA LONDON - PRETO", "Preto"],
+    ["MP000658", "BATOQUE ESPREGUIÇADEIRA LONDON - CHAMPAGNE", "Champagne"],
+  ];
+
+  await db.batch(
+    catalogProducts.map(([code, description, finish]) =>
+      db.prepare("INSERT OR IGNORE INTO inventory (code, description, finish, china, transit, port, gh) VALUES (?, ?, ?, 0, 0, 0, 0)")
+        .bind(code, description, finish),
+    ),
+  );
 }
 
 function positiveInteger(value: unknown) {
@@ -243,14 +270,18 @@ function groupOrders(rows: PurchaseOrderRow[]) {
     id: number;
     shipment_identifier: string;
     invoice_code: string | null;
+    dollar_rate_cents: number | null;
+    freight_usd_cents: number | null;
     created_at: string;
-    items: Array<Omit<PurchaseOrderRow, "id" | "shipment_identifier" | "invoice_code" | "created_at">>;
+    items: Array<Omit<PurchaseOrderRow, "id" | "shipment_identifier" | "invoice_code" | "dollar_rate_cents" | "freight_usd_cents" | "created_at">>;
   }>();
   for (const row of rows) {
     const order = orders.get(row.id) ?? {
       id: row.id,
       shipment_identifier: row.shipment_identifier,
       invoice_code: row.invoice_code,
+      dollar_rate_cents: row.dollar_rate_cents ?? null,
+      freight_usd_cents: row.freight_usd_cents ?? null,
       created_at: row.created_at,
       items: [],
     };
@@ -280,7 +311,7 @@ export async function GET() {
       LEFT JOIN purchase_orders po ON po.id = s.purchase_order_id
       WHERE s.stage != 'completed'
       ORDER BY s.due_date, s.id`).all<ShipmentRow>(),
-    env.DB.prepare(`SELECT po.id, po.shipment_identifier, po.invoice_code, po.created_at, poi.id AS item_id,
+    env.DB.prepare(`SELECT po.id, po.shipment_identifier, po.invoice_code, po.dollar_rate_cents, po.freight_usd_cents, po.created_at, poi.id AS item_id,
       poi.code, i.description, i.finish, poi.unit_value_usd_cents,
       poi.total_quantity, poi.china_quantity, poi.transit_quantity
       FROM purchase_orders po
@@ -299,6 +330,8 @@ export async function GET() {
 async function purchase(payload: Record<string, unknown>) {
   const shipmentIdentifier = String(payload.shipmentIdentifier ?? "").trim();
   const invoiceCode = String(payload.invoiceCode ?? "").trim() || null;
+  const dollarRateCents = payload.dollarRate ? unitValueUsdCents(payload.dollarRate) : null;
+  const freightUsdCents = payload.freightUsd ? unitValueUsdCents(payload.freightUsd) : null;
   const rawItems = Array.isArray(payload.items) ? payload.items as Array<Record<string, unknown>> : [];
   const dueDate = validDate(payload.dueDate);
   if (!shipmentIdentifier) return Response.json({ error: "Informe o embarque." }, { status: 400 });
@@ -307,7 +340,6 @@ async function purchase(payload: Record<string, unknown>) {
     return Response.json({ error: "Já existe um embarque com este identificador." }, { status: 409 });
   }
 
-  const seenCodes = new Set<string>();
   const items: PurchaseItemInput[] = [];
   for (const rawItem of rawItems) {
     const code = String(rawItem.code ?? "").trim().toUpperCase();
@@ -315,13 +347,11 @@ async function purchase(payload: Record<string, unknown>) {
     const chinaQuantity = nonNegativeInteger(rawItem.chinaQuantity);
     const valueCents = unitValueUsdCents(rawItem.unitValueUsd);
     const inventory = await getInventory(code);
-    if (!inventory) return Response.json({ error: `${code || "Item"}: código inválido.` }, { status: 400 });
-    if (seenCodes.has(code)) return Response.json({ error: `${code}: o produto aparece mais de uma vez no pedido.` }, { status: 400 });
+    if (!inventory) return Response.json({ error: `${code || "Item"}: código não encontrado no banco de dados.` }, { status: 400 });
     if (!totalQuantity || chinaQuantity === null || chinaQuantity > totalQuantity) {
       return Response.json({ error: `${code}: informe quantidades inteiras válidas; a quantidade na China não pode superar o total.` }, { status: 400 });
     }
-    if (!valueCents) return Response.json({ error: `${code}: informe um valor unitário em dólar maior que zero, com até duas casas decimais.` }, { status: 400 });
-    seenCodes.add(code);
+    if (!valueCents) return Response.json({ error: `${code}: informe um Valor FOB maior que zero, com até duas casas decimais.` }, { status: 400 });
     items.push({ code, totalQuantity, chinaQuantity, transitQuantity: totalQuantity - chinaQuantity, unitValueUsdCents: valueCents });
   }
   if (items.some((item) => item.transitQuantity > 0) && !dueDate) {
@@ -330,8 +360,8 @@ async function purchase(payload: Record<string, unknown>) {
 
   let purchaseOrderId: number | null = null;
   try {
-    const orderResult = await env.DB.prepare("INSERT INTO purchase_orders (shipment_identifier, invoice_code) VALUES (?, ?)")
-      .bind(shipmentIdentifier, invoiceCode).run();
+    const orderResult = await env.DB.prepare("INSERT INTO purchase_orders (shipment_identifier, invoice_code, dollar_rate_cents, freight_usd_cents) VALUES (?, ?, ?, ?)")
+      .bind(shipmentIdentifier, invoiceCode, dollarRateCents, freightUsdCents).run();
     purchaseOrderId = Number(orderResult.meta.last_row_id);
     const statements = items.flatMap((item) => {
       const itemStatements = [
