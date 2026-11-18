@@ -258,7 +258,6 @@ export default function Home() {
   const [foreignError, setForeignError] = useState("");
   const [foreignForm, setForeignForm] = useState<"purchase" | "dispatch" | null>(null);
   const [foreignShipmentIdentifier, setForeignShipmentIdentifier] = useState("");
-  const [foreignInvoiceCode, setForeignInvoiceCode] = useState("");
   const [purchaseLines, setPurchaseLines] = useState([{ code: initialItems[0].code, unitValueUsd: "", totalQuantity: "", chinaQuantity: "" }]);
   const [dispatchLines, setDispatchLines] = useState([{ code: initialItems[0].code, unitValueUsd: "", quantity: "" }]);
   const [dueDate, setDueDate] = useState("");
@@ -570,7 +569,6 @@ export default function Home() {
         await sendForeignAction({
           action: "purchase",
           shipmentIdentifier: foreignShipmentIdentifier,
-          invoiceCode: foreignInvoiceCode,
           dueDate,
           items: purchaseLines.map((line) => ({
             code: line.code.trim().toUpperCase(),
@@ -979,7 +977,6 @@ export default function Home() {
                   setForeignForm("purchase");
                   setForeignError("");
                   setForeignShipmentIdentifier("");
-                  setForeignInvoiceCode("");
                   setPurchaseLines([{ code: items[0]?.code ?? "", unitValueUsd: "", totalQuantity: "", chinaQuantity: "" }]);
                   setDueDate("");
                 }}>+ Novo pedido de compra</button>
@@ -1062,7 +1059,6 @@ export default function Home() {
                         <div className="order-card-head">
                           <strong>Embarque {order.shipment_identifier}</strong>
                           <div className="order-card-meta">
-                            {order.invoice_code ? <span>NF: {order.invoice_code}</span> : null}
                             <span>{order.items.length} {order.items.length === 1 ? "produto" : "produtos"}</span>
                             <span>{totalUnits} unidades</span>
                             <span>Total: {formatUsdCents(totalUsdCents)}</span>
@@ -1455,38 +1451,15 @@ export default function Home() {
                 {items.map((item) => <option key={item.code} value={item.code}>{item.code} — {item.description} ({item.finish})</option>)}
               </datalist>
               <form onSubmit={submitForeignForm}>
-                {foreignForm === "purchase" ? (
-                  <div className="split-fields">
-                    <label className="field">
-                      <span>Embarque (nº do pedido / contêiner)</span>
-                      <input
-                        type="text"
-                        placeholder="Ex.: EMB-2026-001"
-                        value={foreignShipmentIdentifier}
-                        onChange={(event) => setForeignShipmentIdentifier(event.target.value)}
-                      />
-                    </label>
-                    <label className="field">
-                      <span>Código da Nota Fiscal</span>
-                      <input
-                        type="text"
-                        placeholder="Ex.: NF-12345"
-                        value={foreignInvoiceCode}
-                        onChange={(event) => setForeignInvoiceCode(event.target.value)}
-                      />
-                    </label>
-                  </div>
-                ) : (
-                  <label className="field">
-                    <span>Embarque (nº do pedido / contêiner)</span>
-                    <input
-                      type="text"
-                      placeholder="Ex.: EMB-2026-001"
-                      value={foreignShipmentIdentifier}
-                      onChange={(event) => setForeignShipmentIdentifier(event.target.value)}
-                    />
-                  </label>
-                )}
+                <label className="field">
+                  <span>Embarque (nº do pedido / contêiner)</span>
+                  <input
+                    type="text"
+                    placeholder="Ex.: EMB-2026-001"
+                    value={foreignShipmentIdentifier}
+                    onChange={(event) => setForeignShipmentIdentifier(event.target.value)}
+                  />
+                </label>
 
                 {foreignForm === "purchase" ? (
                   <>
@@ -1526,7 +1499,7 @@ export default function Home() {
                                 </div>
                               </div>
                               <label className="field">
-                                <span>Valor (US$)</span>
+                                <span>Valor FOB</span>
                                 <input
                                   type="text"
                                   inputMode="decimal"
@@ -1611,7 +1584,7 @@ export default function Home() {
                                 />
                               </label>
                               <label className="field">
-                                <span>Valor (US$)</span>
+                                <span>Valor FOB</span>
                                 <input
                                   type="text"
                                   inputMode="decimal"

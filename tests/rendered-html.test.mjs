@@ -37,8 +37,8 @@ test("supports multi-item embarque orders and China withdrawals in Foreign Trade
     readFile(new URL("github-pages/mock-api.ts", root), "utf8"),
   ]);
   assert.match(page, /Embarque \(nº do pedido \/ contêiner\)/);
-  assert.match(page, /Código da Nota Fiscal/);
-  assert.match(foreignTrade, /invoice_code/);
+  assert.match(page, /Valor FOB/);
+  assert.doesNotMatch(page, /Código da Nota Fiscal/);
   assert.match(page, /\+ Adicionar produto/);
   assert.match(page, /Qtd\. disponível/);
   assert.match(page, /Qtd\. a retirar/);
