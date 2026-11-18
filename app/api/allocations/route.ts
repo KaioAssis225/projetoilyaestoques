@@ -127,7 +127,7 @@ async function readData() {
       FROM shipments s
       JOIN inventory i ON i.code = s.code
       LEFT JOIN purchase_orders po ON po.id = s.purchase_order_id
-      WHERE s.stage != 'completed'
+      WHERE s.stage = 'port'
       ORDER BY s.due_date, s.id`).all<IncomingRow>(),
   ]);
   return Response.json({

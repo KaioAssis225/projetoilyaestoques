@@ -1208,33 +1208,39 @@ export default function Home() {
               </section>
             )}
 
-            {incomingShipments.length > 0 && (
-              <section className="commitment-panel incoming-panel" aria-labelledby="incoming-shipments-title">
+            {incomingShipments.filter((shipment) => shipment.stage === "port").length > 0 && (
+              <section className="allocation-tasks incoming-panel" aria-labelledby="incoming-shipments-title">
                 <div className="panel-heading">
-                  <div><h2 id="incoming-shipments-title">Embarques a caminho do GH</h2><p>Previsão de contêineres em trânsito ou no porto para planejamento de endereços.</p></div>
+                  <div><h2 id="incoming-shipments-title">Embarques a caminho do GH</h2><p>Produtos com previsão de chegada ao Estoque GH definida para planejamento de alocação (bloqueados para alteração até a chegada).</p></div>
                 </div>
-                <div className="incoming-list">
-                  {incomingShipments.map((shipment) => (
-                    <article className="incoming-row" key={shipment.id}>
-                      <div>
-                        <strong>Embarque {shipment.shipment_identifier}</strong>
-                        <span>{shipment.stage === "transit" ? "China → Porto" : "Porto → Estoque GH"} · Previsão {new Date(`${shipment.due_date}T12:00:00`).toLocaleDateString("pt-BR")}</span>
-                      </div>
-                      <div className="shipment-items-list">
-                        {shipment.items.map((item) => (
-                          <div className="shipment-item-line" key={item.shipment_id}>
-                            <strong>{item.code}</strong>
-                            <span>{item.description}</span>
-                            <span>{item.quantity} un.</span>
+                <div className="allocation-embarque-list">
+                  {incomingShipments.filter((shipment) => shipment.stage === "port").map((shipment) => {
+                    const totalUnits = shipment.items.reduce((sum, item) => sum + item.quantity, 0);
+                    const formattedArrival = new Date(`${shipment.due_date}T12:00:00`).toLocaleDateString("pt-BR");
+                    return (
+                      <div className="allocation-embarque-group" key={shipment.id}>
+                        <div className="allocation-embarque-head">
+                          <div className="allocation-embarque-title">
+                            <strong>Embarque {shipment.shipment_identifier}</strong>
+                            <span>{shipment.items.length} {shipment.items.length === 1 ? "produto" : "produtos"} · Previsão Estoque GH: {formattedArrival}</span>
                           </div>
-                        ))}
+                          <div className="allocation-progress-wrap">
+                            <span>0/{totalUnits} un. alocadas · A caminho do GH</span>
+                          </div>
+                        </div>
+                        <div className="task-list">
+                          {shipment.items.map((item) => (
+                            <article className="allocation-task-row" key={item.shipment_id}>
+                              <div><strong>{item.code}</strong><span>{item.description} · {item.finish}</span></div>
+                              <div><span>Chegando no GH</span><strong>{item.quantity}</strong></div>
+                              <div><span>A alocar</span><strong>{item.quantity}</strong></div>
+                              <button className="secondary-button compact" type="button" disabled title="A alocação só poderá ser realizada quando o embarque chegar ao Estoque GH">Aguardando chegada</button>
+                            </article>
+                          ))}
+                        </div>
                       </div>
-                      <div>
-                        <strong>{shipment.items.reduce((sum, item) => sum + item.quantity, 0)} un.</strong>
-                        <span>Previsto</span>
-                      </div>
-                    </article>
-                  ))}
+                    );
+                  })}
                 </div>
               </section>
             )}

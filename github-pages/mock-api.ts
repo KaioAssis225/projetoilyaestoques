@@ -251,7 +251,7 @@ function allocationsData() {
           source: shipment?.source ?? null,
         };
       }),
-    incomingShipments: groupDemoShipments(),
+    incomingShipments: groupDemoShipments().filter((shipment) => shipment.stage === "port"),
   };
 }
 

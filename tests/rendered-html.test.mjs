@@ -57,10 +57,12 @@ test("links embarque tasks and position transfers in Allocation", async () => {
     readFile(new URL("github-pages/mock-api.ts", root), "utf8"),
   ]);
   assert.match(page, /Embarques a caminho do GH/);
+  assert.match(page, /Aguardando chegada/);
   assert.match(page, /transfer_return/);
   assert.match(page, /Transferir posição/);
   assert.match(page, /groupedAllocationTasks/);
   assert.match(allocationsRoute, /shipment_identifier/);
+  assert.match(allocationsRoute, /WHERE s\.stage = 'port'/);
   assert.match(allocationsRoute, /action === "transfer"/);
   assert.match(allocationsRoute, /incomingShipments/);
   assert.match(mockApi, /incomingShipments/);
