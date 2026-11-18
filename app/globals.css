@@ -1141,32 +1141,54 @@ tbody tr:hover { background: var(--hover); }
   font-size: 12px;
   font-weight: 650;
 }
-.valuation-notice {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin: -6px 0 18px;
-  padding: 10px 14px;
+.valuation-filter > button.valuation-edit-prices {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.valuation-filter > button.valuation-edit-prices:hover { border-color: var(--accent); }
+.valuation-filter > button + button.valuation-edit-prices { margin-left: 0; }
+.valuation-missing {
+  margin: 0;
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.valuation-total strong.valuation-no-price { color: var(--muted); font-family: var(--font-sans); }
+
+/* Editor de preços do Dashboard */
+.commitment-dialog.price-dialog { width: min(880px, 100%); }
+.price-dialog-intro { max-width: 62ch; margin: 6px 0 0; color: var(--ink-secondary); font-size: 12px; line-height: 1.5; }
+.price-table-wrap {
+  max-height: min(56vh, 520px);
+  overflow: auto;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: var(--subtle);
-  color: var(--ink-secondary);
-  font-size: 12px;
-  line-height: 1.5;
 }
-.valuation-notice-tag {
-  flex: none;
-  padding: 2px 7px;
-  border: 1px solid var(--line-strong);
-  border-radius: 5px;
+.price-table { min-width: 720px; }
+.price-table th { position: sticky; top: 0; z-index: 1; height: 36px; }
+.price-table td { height: auto; padding: 8px 12px; vertical-align: middle; }
+.price-table td:first-child { display: grid; gap: 4px; justify-items: start; }
+.price-product-name { max-width: 30ch; color: var(--ink-secondary); font-size: 11px; line-height: 1.35; }
+.price-computed { display: block; font-family: var(--font-mono); font-size: 12px; font-weight: 650; color: var(--ink); }
+.price-computed.muted { font-family: var(--font-sans); font-weight: 500; color: var(--muted); }
+.price-warning { display: block; margin-top: 2px; color: var(--danger); font-size: 11px; }
+.price-input {
+  width: 116px;
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
   background: var(--surface);
   color: var(--ink);
   font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
+.price-input:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px oklch(0.51 0.175 254 / 0.14); }
+.price-input::placeholder { color: var(--muted); }
 .valuation-ranking-list > .empty-state { margin: 8px 0; }
 .valuation-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }
 .valuation-metrics article { display: grid; gap: 10px; padding: 18px; }
@@ -1267,6 +1289,53 @@ tbody tr:hover { background: var(--hover); }
   border-radius: 10px;
   background: var(--subtle);
 }
+.foreign-line-card.is-adjusted { border-color: var(--stage-port-border); }
+.foreign-line-card.is-blocking { border-color: var(--danger-border); background: var(--danger-soft); }
+.import-line-notes { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; line-height: 1.4; color: var(--stage-port-ink); }
+.import-line-notes .import-line-row { color: var(--muted); font-family: var(--font-mono); }
+.import-line-notes .blocking { color: var(--danger); font-weight: 650; }
+
+/* Conferência da planilha importada */
+.import-review {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--elevated);
+}
+.import-review > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
+.import-review > header strong { font-size: 13px; }
+.import-review > header span { color: var(--ink-secondary); font-size: 12px; }
+.import-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+.import-columns > div { display: grid; gap: 3px; padding: 8px 10px; border: 1px solid var(--line-subtle); border-radius: 8px; background: var(--surface); }
+.import-columns > div.fallback { border-color: var(--stage-port-border); background: var(--stage-port-bg); }
+.import-columns dt { color: var(--ink-secondary); font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+.import-columns dd { display: flex; align-items: baseline; gap: 6px; margin: 0; font-size: 11px; color: var(--ink); overflow-wrap: anywhere; }
+.import-columns div.fallback dd { color: var(--stage-port-ink); }
+.import-column-letter {
+  flex: none;
+  min-width: 22px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--subtle);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+.import-status { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 1.45; }
+.import-status li { display: flex; gap: 8px; }
+.import-status li::before { content: ""; flex: none; width: 7px; height: 7px; margin-top: 6px; border-radius: 2px; background: currentColor; }
+.import-status li.ok { color: var(--stage-gh-ink); }
+.import-status li.adjusted { color: var(--stage-port-ink); }
+.import-status li.blocking { color: var(--danger); font-weight: 650; }
 .foreign-purchase-grid {
   display: grid;
   grid-template-columns: 110px minmax(140px, 1.3fr) 105px 88px 98px 88px 104px auto;

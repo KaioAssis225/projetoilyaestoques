@@ -11,8 +11,18 @@ type DemoState = {
   logisticsEvents: DemoRecord[];
   logisticsOrders: DemoRecord[];
   returnAllocations: DemoRecord[];
+  prices: Record<string, { cost_tax_cents: number | null; retail_cents: number | null; corporate_cents: number | null }>;
   counters: Record<string, number>;
 };
+
+/** Preços de venda de exemplo da demonstração (centavos de R$); o custo sem imposto é sempre calculado. */
+function seedPrices(): DemoState["prices"] {
+  return {
+    CD0100: { cost_tax_cents: 38000, retail_cents: 95000, corporate_cents: 89000 },
+    MJ0100: { cost_tax_cents: 98000, retail_cents: 239000, corporate_cents: 225000 },
+    SF0100: { cost_tax_cents: 142000, retail_cents: 349000, corporate_cents: 329000 },
+  };
+}
 
 const STORAGE_KEY = "ilya-estoque-github-pages-demo-v3";
 const originalFetch = window.fetch.bind(window);
@@ -51,6 +61,8 @@ function initialState(): DemoState {
         id: 1,
         shipment_identifier: "EMB-DEMO-001",
         invoice_code: "NF-DEMO-001",
+        dollar_rate_cents: 512,
+        freight_usd_cents: 35000,
         created_at: now(),
         items: [{ item_id: 1, code: "CD0100", unit_value_usd_cents: 4500, total_quantity: 70, china_quantity: 50, transit_quantity: 20 }],
       },
@@ -58,6 +70,8 @@ function initialState(): DemoState {
         id: 2,
         shipment_identifier: "EMB-DEMO-002",
         invoice_code: "NF-DEMO-002",
+        dollar_rate_cents: 498,
+        freight_usd_cents: 52000,
         created_at: now(),
         items: [{ item_id: 2, code: "MJ0100", unit_value_usd_cents: 12000, total_quantity: 70, china_quantity: 40, transit_quantity: 30 }],
       },
@@ -76,6 +90,7 @@ function initialState(): DemoState {
       { id: 1, logistics_order_item_id: 0, code: "CD0100", street: "DEV", column: "01", level: "01", quantity: 4, order_number: "DEMO-001", created_at: now() },
       { id: 2, logistics_order_item_id: 0, code: "SF0100", street: "DEV", column: "02", level: "01", quantity: 2, order_number: "DEMO-002", created_at: now() },
     ],
+    prices: seedPrices(),
     counters: { shipment: 2, purchase: 2, purchaseItem: 2, commitment: 0, commitmentItem: 0, allocation: 4, task: 0, logisticsEvent: 0, logisticsOrder: 0, logisticsItem: 0, returnAllocation: 2 },
   };
 }
@@ -91,6 +106,7 @@ function loadState(): DemoState {
       }
     }
     backfillExitEvents(parsed);
+    parsed.prices ??= seedPrices();
     return parsed;
   } catch {
     return initialState();
@@ -792,6 +808,79 @@ async function logisticsApi(method: string, input: RequestInfo | URL, init?: Req
   return json(logisticsData());
 }
 
+/** Mesmo critério do D1 (app/api/prices/route.ts): vazio → null, formato inválido → undefined. */
+function brlCents(value: unknown): number | null | undefined {
+  const raw = String(value ?? "").replace(/R\$|\s/g, "");
+  if (!raw) return null;
+  let normalized: string;
+  if (raw.includes(",") && raw.includes(".")) {
+    normalized = raw.lastIndexOf(",") > raw.lastIndexOf(".") ? raw.replace(/\./g, "").replace(",", ".") : raw.replace(/,/g, "");
+  } else if (raw.includes(",")) {
+    normalized = raw.replace(",", ".");
+  } else {
+    normalized = /^\d{1,3}(\.\d{3})+$/.test(raw) ? raw.replace(/\./g, "") : raw;
+  }
+  if (!/^\d+(\.\d{1,2})?$/.test(normalized)) return undefined;
+  const cents = Math.round(Number(normalized) * 100);
+  return Number.isSafeInteger(cents) ? cents : undefined;
+}
+
+function pricesData() {
+  // Custo sem imposto = (FOB + rateio do frete pelo valor FOB) × câmbio, média ponderada por quantidade.
+  const landed = new Map<string, { units: number; withoutRate: number; totalCents: number }>();
+  for (const order of state.purchaseOrders) {
+    const items = order.items ?? [];
+    const fobTotal = items.reduce((sum: number, item: DemoRecord) => sum + item.unit_value_usd_cents * item.total_quantity, 0);
+    for (const item of items) {
+      const entry = landed.get(item.code) ?? { units: 0, withoutRate: 0, totalCents: 0 };
+      if (order.dollar_rate_cents > 0) {
+        const itemFob = item.unit_value_usd_cents * item.total_quantity;
+        const freightShare = fobTotal > 0 ? (order.freight_usd_cents ?? 0) * (itemFob / fobTotal) : 0;
+        entry.units += item.total_quantity;
+        entry.totalCents += (itemFob + freightShare) * order.dollar_rate_cents / 100;
+      } else {
+        entry.withoutRate += item.total_quantity;
+      }
+      landed.set(item.code, entry);
+    }
+  }
+  return {
+    prices: state.inventory.map((item) => {
+      const manual = state.prices[item.code] ?? { cost_tax_cents: null, retail_cents: null, corporate_cents: null };
+      const cost = landed.get(item.code);
+      return {
+        code: item.code,
+        ...manual,
+        landed_cost_cents: cost && cost.units > 0 ? Math.round(cost.totalCents / cost.units) : null,
+        cost_units: cost?.units ?? 0,
+        units_without_rate: cost?.withoutRate ?? 0,
+      };
+    }).sort((a, b) => a.code.localeCompare(b.code)),
+  };
+}
+
+async function pricesApi(method: string, input: RequestInfo | URL, init?: RequestInit) {
+  if (method === "GET") return json(pricesData());
+  const payload = await bodyOf(input, init);
+  const entries = Array.isArray(payload.prices) ? payload.prices : [];
+  if (!entries.length) return json({ error: "Informe ao menos um preço." }, 400);
+  const parsed: Array<[string, DemoState["prices"][string]]> = [];
+  for (const entry of entries) {
+    const code = String(entry.code ?? "").trim().toUpperCase();
+    const costTax = brlCents(entry.costTax);
+    const retail = brlCents(entry.retail);
+    const corporate = brlCents(entry.corporate);
+    if (!code) return json({ error: "Produto inválido." }, 400);
+    if (costTax === undefined || retail === undefined || corporate === undefined) {
+      return json({ error: `${code}: use valores em reais, como 1.234,56.` }, 400);
+    }
+    parsed.push([code, { cost_tax_cents: costTax, retail_cents: retail, corporate_cents: corporate }]);
+  }
+  for (const [code, value] of parsed) state.prices[code] = value;
+  save();
+  return json(pricesData());
+}
+
 export function installDemoApi() {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -801,6 +890,7 @@ export function installDemoApi() {
     if (url.pathname.endsWith("/api/foreign-trade")) return foreignApi(method, input, init);
     if (url.pathname.endsWith("/api/allocations")) return allocationsApi(method, input, init);
     if (url.pathname.endsWith("/api/logistics")) return logisticsApi(method, input, init);
+    if (url.pathname.endsWith("/api/prices")) return pricesApi(method, input, init);
     return originalFetch(input, init);
   };
 }

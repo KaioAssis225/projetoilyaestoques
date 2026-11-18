@@ -1,7 +1,8 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import ValuationDashboard, { type ExitSummaryItem } from "./valuation-dashboard";
+import ValuationDashboard, { type ExitSummaryItem, type PriceDraft, type ProductPrice } from "./valuation-dashboard";
+import { parsePurchaseSheet, SHEET_READ_OPTIONS, SHEET_ROWS_OPTIONS, type ImportColumnSpec, type ImportedColumn, type SkippedRow } from "./import-sheet";
 
 type StockItem = {
   code: string;
@@ -246,6 +247,35 @@ function NavIcon({ name }: { name: "stock" | "dashboard" | "commercial" | "forei
   }
 }
 
+/** Colunas verdes da planilha padrão de importação (E, G, V, AC, AD), localizadas pelo cabeçalho. */
+const IMPORT_COLUMNS: ImportColumnSpec[] = [
+  { key: "code", label: "Código", headers: ["CODIGO INTERNO PRODUTO", "CODIGO INTERNO", "CODIGO"], fallback: 4 },
+  { key: "quantity", label: "Quantidade", headers: ["QUANTIDADE"], fallback: 6 },
+  { key: "unitValue", label: "Valor FOB", headers: ["VALOR UNITARIO", "VALOR FOB"], fallback: 21 },
+  { key: "dollar", label: "Câmbio", headers: ["DOLAR"], fallback: 28 },
+  { key: "freight", label: "Frete", headers: ["FRETE"], fallback: 29 },
+];
+
+type PurchaseLine = {
+  code: string;
+  unitValueUsd: string;
+  totalQuantity: string;
+  chinaQuantity: string;
+  /** Linha da planilha de origem e o que precisou de ajuste na leitura. */
+  sourceRow?: number;
+  issues?: string[];
+};
+
+type ImportReview = {
+  fileName: string;
+  sheetName: string;
+  extraSheets: number;
+  columns: ImportedColumn[];
+  skipped: SkippedRow[];
+  dollarFound: boolean;
+  freightFound: boolean;
+};
+
 const sectionLabels: Record<"stock" | "dashboard" | "commercial" | "foreign" | "logistics" | "allocation", string> = {
   stock: "Estoque",
   dashboard: "Dashboard",
@@ -294,14 +324,15 @@ export default function Home() {
   const [foreignShipmentIdentifier, setForeignShipmentIdentifier] = useState("");
   const [foreignDollarRate, setForeignDollarRate] = useState("");
   const [foreignFreightUsd, setForeignFreightUsd] = useState("");
-  const [importedSheetNotice, setImportedSheetNotice] = useState("");
-  const [purchaseLines, setPurchaseLines] = useState([{ code: initialItems[0].code, unitValueUsd: "", totalQuantity: "", chinaQuantity: "" }]);
+  const [importReview, setImportReview] = useState<ImportReview | null>(null);
+  const [purchaseLines, setPurchaseLines] = useState<PurchaseLine[]>([{ code: initialItems[0].code, unitValueUsd: "", totalQuantity: "", chinaQuantity: "" }]);
   const [dispatchLines, setDispatchLines] = useState([{ code: initialItems[0].code, unitValueUsd: "", quantity: "" }]);
   const [dueDate, setDueDate] = useState("");
   const [arrivalAction, setArrivalAction] = useState<{ shipment: Shipment; type: "arrived" | "delayed" } | null>(null);
   const [arrivalDate, setArrivalDate] = useState("");
   const [logisticsEvents, setLogisticsEvents] = useState<LogisticsEvent[]>([]);
   const [exitSummary, setExitSummary] = useState<ExitSummaryItem[]>([]);
+  const [prices, setPrices] = useState<ProductPrice[]>([]);
   // Uma operação por vez: o React aplica o `disabled` dos botões antes de tratar o próximo clique.
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState<{ id: number; message: string } | null>(null);
@@ -437,6 +468,28 @@ export default function Home() {
     }
   }
 
+  async function refreshPrices() {
+    try {
+      const response = await fetch("/api/prices");
+      const data = await response.json() as { prices?: ProductPrice[] };
+      if (response.ok) setPrices(data.prices ?? []);
+    } catch {
+      // Sem preços o Dashboard mostra "Sem preço"; não bloqueia o resto da tela.
+    }
+  }
+
+  async function savePrices(drafts: PriceDraft[]) {
+    const response = await fetch("/api/prices", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prices: drafts }),
+    });
+    const data = await response.json() as { prices?: ProductPrice[]; error?: string };
+    if (!response.ok) throw new Error(data.error ?? "Não foi possível salvar os preços.");
+    setPrices(data.prices ?? []);
+    notify(`Preços de ${drafts.length} ${drafts.length === 1 ? "produto salvos" : "produtos salvos"}.`);
+  }
+
   function applyAllocationsData(data: { inventory?: Array<Omit<StockItem, "ghCommitted">>; allocations?: Allocation[]; tasks?: AllocationTask[]; incomingShipments?: IncomingShipment[] }) {
     setAllocations(data.allocations ?? []);
     setAllocationTasks(data.tasks ?? []);
@@ -478,8 +531,9 @@ export default function Home() {
 
   useEffect(() => {
     // Initial API hydration intentionally updates the client-side workspace state.
+    // Os preços dependem das tabelas de compra, criadas pela rota do Comércio Exterior.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void refreshForeignTrade();
+    void refreshForeignTrade().then(() => refreshPrices());
     void refreshLogistics();
     void refreshAllocations();
     void fetch("/api/commitments").then(async (response) => {
@@ -652,7 +706,7 @@ export default function Home() {
       ...item,
       ghCommitted: current.find((candidate) => candidate.code === item.code)?.ghCommitted ?? 0,
     })));
-    await refreshAllocations();
+    await Promise.all([refreshAllocations(), refreshPrices()]);
   }
 
   async function handleForeignSpreadsheetUpload(event: React.ChangeEvent<HTMLInputElement>) {
@@ -662,106 +716,44 @@ export default function Home() {
     try {
       const XLSX = await import("xlsx");
       const buffer = await file.arrayBuffer();
-      const workbook = XLSX.read(buffer, { type: "array" });
+      const workbook = XLSX.read(buffer, SHEET_READ_OPTIONS);
       const firstSheetName = workbook.SheetNames[0];
       if (!firstSheetName) throw new Error("Planilha vazia.");
       const sheet = workbook.Sheets[firstSheetName];
-      const rows = XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1, raw: false, defval: "" });
+      // Números do Excel chegam como número e texto de CSV chega cru: quem interpreta é parsePurchaseSheet.
+      const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, SHEET_ROWS_OPTIONS);
       if (!rows.length) throw new Error("Nenhuma linha encontrada na planilha.");
 
-      const norm = (val: unknown) =>
-        String(val ?? "")
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
-          .toUpperCase()
-          .trim();
-
-      const row0 = (rows[0] ?? []).map(norm);
-      const row1 = (rows[1] ?? []).map(norm);
-
-      const findCol = (pred: (header: string) => boolean, fallback: number) => {
-        const idx0 = row0.findIndex(pred);
-        if (idx0 !== -1) return idx0;
-        const idx1 = row1.findIndex(pred);
-        if (idx1 !== -1) return idx1;
-        return fallback;
-      };
-
-      const codeCol = findCol((h) => h.includes("CODIGO INTERNO PRODUTO") || h === "CODIGO INTERNO" || h === "CODIGO", 4);
-      const qtyCol = findCol((h) => h === "QUANTIDADE" || h.startsWith("QUANTIDADE"), 6);
-      const unitValueCol = findCol((h) => h.includes("VALOR UNITARIO") || h.includes("VALOR FOB"), 21);
-      const dollarCol = findCol((h) => h === "DOLAR" || h.includes("DOLAR"), 28);
-      const freightCol = findCol((h) => h === "FRETE" || h.includes("FRETE"), 29);
-
-      const cleanDecimal = (raw: unknown): string => {
-        const stripped = String(raw ?? "")
-          .replace(/[R$US\s]/gi, "")
-          .trim();
-        if (!stripped) return "";
-        const normalized = stripped.includes(",") && stripped.includes(".")
-          ? stripped.replace(/\./g, "").replace(",", ".")
-          : stripped.replace(",", ".");
-        const parsed = Number(normalized);
-        return Number.isFinite(parsed) && parsed > 0 ? parsed.toFixed(2) : "";
-      };
-
-      const extractedLines: Array<{ code: string; unitValueUsd: string; totalQuantity: string; chinaQuantity: string }> = [];
-      let detectedDollar = "";
-      let detectedFreight = "";
-
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i] ?? [];
-        const rawCode = String(row[codeCol] ?? "").trim().toUpperCase();
-        const normCode = norm(rawCode);
-
-        const maybeDollar = cleanDecimal(row[dollarCol]);
-        if (maybeDollar && !detectedDollar) detectedDollar = maybeDollar;
-        const maybeFreight = cleanDecimal(row[freightCol]);
-        if (maybeFreight && !detectedFreight) detectedFreight = maybeFreight;
-
-        if (
-          !rawCode ||
-          normCode === "IMPORTADOR" ||
-          normCode === "EXCELLENCE" ||
-          normCode.includes("CODIGO INTERNO") ||
-          normCode === "CODIGO"
-        ) {
-          continue;
-        }
-
-        const rawQty = String(row[qtyCol] ?? "").trim().replace(",", ".");
-        const parsedQty = Math.round(Number(rawQty));
-        const formattedFob = cleanDecimal(row[unitValueCol]);
-
-        if (!Number.isInteger(parsedQty) || parsedQty <= 0 || !formattedFob) {
-          continue;
-        }
-
-        extractedLines.push({
-          code: rawCode,
-          unitValueUsd: formattedFob,
-          totalQuantity: String(parsedQty),
-          chinaQuantity: "0",
-        });
+      const result = parsePurchaseSheet(rows, IMPORT_COLUMNS, items.map((item) => item.code));
+      if (!result.lines.length) {
+        throw new Error(`Nenhum item válido encontrado nas colunas CODIGO INTERNO PRODUTO, QUANTIDADE e VALOR UNITARIO${result.skipped.length ? ` (${result.skipped.length} linhas ignoradas)` : ""}.`);
       }
 
-      if (!extractedLines.length) {
-        throw new Error("Nenhum item válido encontrado nas colunas CODIGO INTERNO PRODUTO, QUANTIDADE e VALOR UNITARIO.");
-      }
-
-      setPurchaseLines(extractedLines);
-      if (detectedDollar) setForeignDollarRate(detectedDollar);
-      if (detectedFreight) setForeignFreightUsd(detectedFreight);
+      setPurchaseLines(result.lines.map((line) => ({
+        code: line.code,
+        unitValueUsd: line.unitValueUsd,
+        totalQuantity: String(line.totalQuantity),
+        chinaQuantity: "0",
+        sourceRow: line.sourceRow,
+        issues: line.issues,
+      })));
+      if (result.dollarRate) setForeignDollarRate(result.dollarRate);
+      if (result.freightUsd) setForeignFreightUsd(result.freightUsd);
 
       if (!foreignShipmentIdentifier.trim()) {
-        const baseName = file.name.replace(/\.[^.]+$/, "").split(/\s*-\s*/)[0]?.trim();
+        const baseName = file.name.replace(/.[^.]+$/, "").split(/s*-s*/)[0]?.trim();
         if (baseName) setForeignShipmentIdentifier(baseName);
       }
 
-      const matchedInDb = extractedLines.filter((line) => Boolean(findStockItem(line.code))).length;
-      setImportedSheetNotice(
-        `Planilha "${file.name}" lida: ${extractedLines.length} itens importados (${matchedInDb}/${extractedLines.length} vinculados ao banco de dados).`,
-      );
+      setImportReview({
+        fileName: file.name,
+        sheetName: firstSheetName,
+        extraSheets: workbook.SheetNames.length - 1,
+        columns: result.columns,
+        skipped: result.skipped,
+        dollarFound: Boolean(result.dollarRate),
+        freightFound: Boolean(result.freightUsd),
+      });
       setForeignError("");
       setForeignForm("purchase");
     } catch (error) {
@@ -804,7 +796,7 @@ export default function Home() {
         ? `Embarque ${foreignShipmentIdentifier.trim()} registrado.`
         : `Retirada ${foreignShipmentIdentifier.trim()} enviada para trânsito.`);
       setForeignForm(null);
-      setImportedSheetNotice("");
+      setImportReview(null);
       setForeignError("");
     } catch (error) {
       setForeignError(error instanceof Error ? error.message : "Não foi possível concluir a operação.");
@@ -1036,7 +1028,7 @@ export default function Home() {
 
       <section className="workspace" id="conteudo">
         {activeSection === "dashboard" ? (
-          <ValuationDashboard items={items} logisticsEvents={logisticsEvents} exitSummary={exitSummary} syncedLabel={syncedLabel} />
+          <ValuationDashboard items={items} logisticsEvents={logisticsEvents} exitSummary={exitSummary} prices={prices} onSavePrices={savePrices} syncedLabel={syncedLabel} />
         ) : activeSection === "stock" ? (
           <>
         <div className="page-heading">
@@ -1229,7 +1221,7 @@ export default function Home() {
                 <button className="secondary-button" type="button" onClick={() => {
                   setForeignForm("dispatch");
                   setForeignError("");
-                  setImportedSheetNotice("");
+                  setImportReview(null);
                   setForeignShipmentIdentifier("");
                   setForeignDollarRate("");
                   setForeignFreightUsd("");
@@ -1239,7 +1231,7 @@ export default function Home() {
                 <button className="primary-button" type="button" onClick={() => {
                   setForeignForm("purchase");
                   setForeignError("");
-                  setImportedSheetNotice("");
+                  setImportReview(null);
                   setForeignShipmentIdentifier("");
                   setForeignDollarRate("");
                   setForeignFreightUsd("");
@@ -1718,6 +1710,11 @@ export default function Home() {
             usdCents: acc.usdCents + unitCents * total,
           };
         }, { total: 0, china: 0, transit: 0, usdCents: 0 });
+        // Linhas cujo código não existe no banco: bloqueiam a confirmação até serem corrigidas ou removidas.
+        const unmatchedLines = foreignForm === "purchase"
+          ? purchaseLines.filter((line) => line.code.trim() && !findStockItem(line.code))
+          : [];
+        const adjustedLines = purchaseLines.filter((line) => line.issues?.length);
 
         return (
           <div className="dialog-backdrop" role="presentation">
@@ -1764,10 +1761,49 @@ export default function Home() {
 
                 {foreignForm === "purchase" ? (
                   <>
-                    {importedSheetNotice && (
-                      <p className="field-hint" style={{ margin: "0 0 10px", color: "var(--accent)", fontWeight: 500 }}>
-                        {importedSheetNotice}
-                      </p>
+                    {importReview && (
+                      <section className="import-review" aria-label="Conferência da planilha importada">
+                        <header>
+                          <strong>Conferência da planilha</strong>
+                          <span>
+                            {importReview.fileName} · aba “{importReview.sheetName}”
+                            {importReview.extraSheets > 0 ? ` (${importReview.extraSheets} outra${importReview.extraSheets === 1 ? "" : "s"} aba${importReview.extraSheets === 1 ? "" : "s"} não lida${importReview.extraSheets === 1 ? "" : "s"})` : ""}
+                          </span>
+                        </header>
+                        <dl className="import-columns">
+                          {importReview.columns.map((column) => (
+                            <div key={column.key} className={column.header ? "" : "fallback"}>
+                              <dt>{column.label}</dt>
+                              <dd>
+                                <span className="import-column-letter">{column.letter}</span>
+                                {column.header ?? "cabeçalho não encontrado, posição padrão"}
+                              </dd>
+                            </div>
+                          ))}
+                        </dl>
+                        <ul className="import-status">
+                          <li className={unmatchedLines.length ? "blocking" : "ok"}>
+                            {unmatchedLines.length
+                              ? `${unmatchedLines.length} ${unmatchedLines.length === 1 ? "código não encontrado" : "códigos não encontrados"} no banco: corrija o código ou remova a linha para confirmar.`
+                              : `${purchaseLines.length} ${purchaseLines.length === 1 ? "linha vinculada" : "linhas vinculadas"} ao cadastro do banco.`}
+                          </li>
+                          {adjustedLines.length > 0 && (
+                            <li className="adjusted">{adjustedLines.length} {adjustedLines.length === 1 ? "linha ajustada" : "linhas ajustadas"} na leitura: confira os avisos em cada produto.</li>
+                          )}
+                          {importReview.skipped.length > 0 && (
+                            <li className="adjusted">
+                              {importReview.skipped.length} {importReview.skipped.length === 1 ? "linha ignorada" : "linhas ignoradas"}:{" "}
+                              {importReview.skipped.slice(0, 4).map((entry) => `linha ${entry.sourceRow} (${entry.rawCode}, ${entry.reason})`).join("; ")}
+                              {importReview.skipped.length > 4 ? "…" : ""}
+                            </li>
+                          )}
+                          {(!importReview.dollarFound || !importReview.freightFound) && (
+                            <li className="adjusted">
+                              {!importReview.dollarFound && !importReview.freightFound ? "Câmbio e frete não encontrados" : !importReview.dollarFound ? "Câmbio não encontrado" : "Frete não encontrado"} na planilha: preencha acima para o custo entrar no Dashboard.
+                            </li>
+                          )}
+                        </ul>
+                      </section>
                     )}
                     <div className="foreign-lines">
                       <div className="foreign-lines-head">
@@ -1797,8 +1833,16 @@ export default function Home() {
                         const transit = validQty ? total - china : null;
                         const unitCents = parseUsdInput(line.unitValueUsd);
                         const lineTotalCents = unitCents && Number.isInteger(total) && total > 0 ? unitCents * total : null;
+                        const lineState = !matched && line.code.trim() ? " is-blocking" : line.issues?.length ? " is-adjusted" : "";
                         return (
-                          <div className="foreign-line-card" key={index}>
+                          <div className={`foreign-line-card${lineState}`} key={index}>
+                            {(line.sourceRow || (!matched && line.code.trim())) && (
+                              <div className="import-line-notes">
+                                {line.sourceRow ? <span className="import-line-row">Linha {line.sourceRow} da planilha</span> : null}
+                                {!matched && line.code.trim() && <span className="blocking">Código “{line.code}” não existe no banco.</span>}
+                                {line.issues?.map((issue) => <span key={issue}>{issue}</span>)}
+                              </div>
+                            )}
                             <div className="foreign-purchase-grid">
                               <label className="field">
                                 <span>Código</span>
@@ -1952,7 +1996,7 @@ export default function Home() {
                   </>
                 )}
                 {foreignError && <p className="form-error" role="alert">{foreignError}</p>}
-                <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setForeignForm(null)}>Cancelar</button><button className="primary-button" type="submit" disabled={submitting}>Confirmar</button></div>
+                <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setForeignForm(null)}>Cancelar</button><button className="primary-button" type="submit" disabled={submitting || unmatchedLines.length > 0} title={unmatchedLines.length ? "Corrija ou remova os códigos não encontrados no banco" : undefined}>Confirmar</button></div>
               </form>
             </section>
           </div>
